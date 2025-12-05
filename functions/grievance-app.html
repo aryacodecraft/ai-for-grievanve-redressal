@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Grievance Redressal System</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+
+  <style>
+    :root {
+      --bs-primary: #9c27b0;
+      --bs-primary-rgb: 156, 39, 176;
+    }
+    body {
+      background-color: #121212 !important;
+      color: #e0e0e0;
+    }
+    .card {
+      background-color: #1e1e1e;
+      border: 1px solid #333;
+    }
+    .card-header {
+      background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+      color: white;
+    }
+    .btn-outline-success {
+      color: #69f0ae !important;
+      border-color: #69f0ae !important;
+    }
+    .btn-outline-success:hover {
+      background: #69f0ae !important;
+      color: #121212 !important;
+    }
+    .btn-success {
+      background-color: #8e24aa !important;
+      border-color: #8e24aa !important;
+    }
+    .btn-success:hover {
+      background-color: #7b1fa2 !important;
+    }
+    .form-control {
+      background-color: #2d2d2d !important;
+      border: 1px solid #555 !important;
+      color: #e0e0e0 !important;
+    }
+    .form-control::placeholder {
+      color: #aaa !important;
+    }
+    .status-badge {
+      font-size: 0.85em;
+      padding: 0.25em 0.5em;
+      border-radius: 12px;
+    }
+    .status-open { background: #ff9800; color: #121212; }
+    .status-resolved { background: #4caf50; color: white; }
+  </style>
+
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+</head>
+<body data-bs-theme="dark">
+  <div class="container mt-4">
+    <div class="row justify-content-center">
+      <div class="col-md-8">
+        <div class="card shadow">
+          <div class="card-header text-center">
+            <h3 class="mb-0">Grievance Redressal</h3>
+          </div>
+          <div class="card-body">
+
+            <!-- Auth Section -->
+            <div id="authSection">
+              <h5 class="text-center mb-3">Sign In / Sign Up</h5>
+              <div class="mb-3">
+                <input type="email" id="email" class="form-control" placeholder="Email" />
+              </div>
+              <div class="mb-3">
+                <input type="password" id="password" class="form-control" placeholder="Password" />
+              </div>
+              <div class="d-grid gap-2">
+                <button class="btn btn-outline-success" onclick="signUp()">Create Account</button>
+                <button class="btn btn-outline-primary" onclick="signIn()">Sign In</button>
+              </div>
+            </div>
+
+            <!-- Grievance Form + List (visible when signed in) -->
+            <div id="mainSection" style="display:none;">
+              <h5 class="text-center mb-3">Submit a Grievance</h5>
+              <div class="mb-3">
+                <input type="text" id="title" class="form-control" placeholder="Title (e.g., Road Repair)" />
+              </div>
+              <div class="mb-3">
+                <textarea id="description" class="form-control" rows="3" placeholder="Describe your issue..."></textarea>
+              </div>
+              <div class="d-grid gap-2 mb-4">
+                <button class="btn btn-success" onclick="submitGrievance()">Submit Grievance</button>
+                <button class="btn btn-outline-secondary" onclick="signOut()">Sign Out</button>
+              </div>
+
+              <!-- Grievance List -->
+              <h6 class="mb-2">Your Grievances:</h6>
+              <div id="grievanceList" class="list-group">
+                <div class="text-center text-muted">Loading grievances...</div>
+              </div>
+            </div>
+
+            <div id="status" class="mt-3 text-center fw-bold"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 🔑 Your Firebase config
+    const firebaseConfig = {
+      apiKey: "AIzaSyAWTsTs_NEav91LKQ5jLrVf3ojsLYAY4XI",
+      authDomain: "grievance-redressal-syst-627d7.firebaseapp.com",
+      projectId: "grievance-redressal-syst-627d7",
+      storageBucket: "grievance-redressal-syst-627d7.firebasestorage.app",
+      messagingSenderId: "47862331768",
+      appId: "1:47862331768:web:423bb1a0ac46e259d1b08d",
+      measurementId: "G-YX2Y3RFF3P"
+    };
+
+    const app = firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+
+    let unsubscribe = null;
+
+    // Toggle UI
+    auth.onAuthStateChanged(user => {
+  document.getElementById('authSection').style.display = user ? 'none' : 'block';
+  document.getElementById('mainSection').style.display = user ? 'block' : 'none';
+  document.getElementById('status').innerText = '';
+
+  // Clean up previous listener
+  if (unsubscribe) unsubscribe();
+
+  if (user) {
+    console.log("✅ [DEBUG] User signed in with UID:", user.uid);
+
+    const q = db.collection("grievances")
+                .where("userId", "==", user.uid)
+                .orderBy("createdAt", "desc");
+
+    unsubscribe = q.onSnapshot(snapshot => {
+      console.log("📄 [DEBUG] Received grievances snapshot. Count:", snapshot.size);
+
+      const listEl = document.getElementById('grievanceList');
+      if (snapshot.empty) {
+        listEl.innerHTML = '<div class="text-center text-muted">No grievances yet.</div>';
+        return;
+      }
+
+      let html = '';
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        console.log("📄 [DEBUG] Grievance data:", data);
+
+        const date = data.createdAt?.toDate?.() || new Date();
+        const formattedDate = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        const statusClass = data.status === 'resolved' ? 'status-resolved' : 'status-open';
+        html += `
+          <div class="list-group-item bg-dark border-secondary mb-2 p-3 rounded">
+            <div class="d-flex justify-content-between">
+              <strong>${data.title || 'Untitled'}</strong>
+              <span class="status-badge ${statusClass}">${data.status || 'open'}</span>
+            </div>
+            <p class="mb-1">${data.description || ''}</p>
+            <small class="text-muted">${formattedDate}</small>
+          </div>
+        `;
+      });
+      listEl.innerHTML = html;
+    }, error => {
+      console.error("❌ [DEBUG] Firestore read error:", error);
+      document.getElementById('grievanceList').innerHTML = '<div class="text-danger">Failed to load grievances.</div>';
+    });
+  } else {
+    console.log("⚠️ [DEBUG] User is signed out");
+  }
+});
+
+    // Auth
+    async function signUp() {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      if (!email || !password) return showStatus("⚠️ Fill all fields.", "text-warning");
+      try {
+        await auth.createUserWithEmailAndPassword(email, password);
+        showStatus("✅ Account created!", "text-success");
+      } catch (e) {
+        showStatus("❌ " + e.message, "text-danger");
+      }
+    }
+
+    async function signIn() {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      if (!email || !password) return showStatus("⚠️ Fill all fields.", "text-warning");
+      try {
+        await auth.signInWithEmailAndPassword(email, password);
+        showStatus("✅ Welcome back!", "text-success");
+      } catch (e) {
+        showStatus("❌ " + e.message, "text-danger");
+      }
+    }
+
+    function signOut() {
+      auth.signOut();
+    }
+
+    // Submit
+    async function submitGrievance() {
+      const user = auth.currentUser;
+      const title = document.getElementById('title').value.trim();
+      const desc = document.getElementById('description').value.trim();
+
+      if (!user) return showStatus("❌ You must be signed in!", "text-danger");
+      if (!title || !desc) return showStatus("⚠️ Title and description required.", "text-warning");
+
+      try {
+        await db.collection("grievances").add({
+          title,
+          description: desc,
+          userId: user.uid,
+          status: "open",
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        document.getElementById('title').value = '';
+        document.getElementById('description').value = '';
+        showStatus("✅ Submitted!", "text-success");
+      } catch (e) {
+        showStatus("❌ Failed: " + e.message, "text-danger");
+      }
+    }
+
+    function showStatus(msg, className) {
+      const el = document.getElementById('status');
+      el.innerText = msg;
+      el.className = `mt-2 text-center fw-bold ${className}`;
+      setTimeout(() => {
+        if (el.innerText === msg) el.innerText = ''; // auto-clear
+      }, 5000);
+    }
+  </script>
+</body>
+</html>
