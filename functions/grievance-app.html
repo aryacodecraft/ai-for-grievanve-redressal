@@ -131,6 +131,8 @@
     const auth = firebase.auth();
     const db = firebase.firestore();
 
+    const BACKEND_URL = "http://localhost:5000"; 
+
     let unsubscribe = null;
 
     // Toggle UI
@@ -218,29 +220,47 @@
     }
 
     // Submit
-    async function submitGrievance() {
-      const user = auth.currentUser;
-      const title = document.getElementById('title').value.trim();
-      const desc = document.getElementById('description').value.trim();
+  async function submitGrievance() {
+    const user = auth.currentUser;
+    const title = document.getElementById('title').value.trim();
+    const desc = document.getElementById('description').value.trim();
 
-      if (!user) return showStatus("❌ You must be signed in!", "text-danger");
-      if (!title || !desc) return showStatus("⚠️ Title and description required.", "text-warning");
+    if (!user) return showStatus("❌ You must be signed in!", "text-danger");
+    if (!title || !desc) return showStatus("⚠️ Title and description required.", "text-warning");
 
-      try {
-        await db.collection("grievances").add({
+    try {
+      // 🔁 CALL BACKEND instead of writing directly to Firestore
+      const res = await fetch(`${BACKEND_URL}/submit-grievance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           title,
           description: desc,
-          userId: user.uid,
-          status: "open",
-          createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        document.getElementById('title').value = '';
-        document.getElementById('description').value = '';
-        showStatus("✅ Submitted!", "text-success");
-      } catch (e) {
-        showStatus("❌ Failed: " + e.message, "text-danger");
+          userId: user.uid
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.error("Backend error:", errData);
+        throw new Error(errData.error || `HTTP ${res.status}`);
       }
+
+      const data = await res.json();
+      console.log("✅ Backend response:", data);
+
+      // Clear form
+      document.getElementById('title').value = '';
+      document.getElementById('description').value = '';
+
+      showStatus("✅ Submitted & analyzed by AI!", "text-success");
+    } catch (e) {
+      console.error("submitGrievance error:", e);
+      showStatus("❌ Failed: " + e.message, "text-danger");
     }
+  }
+
+
 
     function showStatus(msg, className) {
       const el = document.getElementById('status');

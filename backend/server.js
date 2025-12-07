@@ -6,8 +6,9 @@ const cors = require("cors");
 const fetch = require("node-fetch");
 const admin = require("firebase-admin");
 
-// -------- Firebase Admin Init --------
-const serviceAccount = require("./serviceAccountKey.json"); // download from Firebase console
+// ---------- Firebase Admin init ----------
+const serviceAccount = require("./serviceAccountKey.json");
+// serviceAccountKey.json must be in backend/ folder
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -17,10 +18,9 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// ====== HF CONFIG (from .env) ======
+// ---------- Hugging Face config ----------
 const HF_API_TOKEN = process.env.HUGGINGFACE_API_TOKEN;
 
-// Models
 const CATEGORY_MODEL = "facebook/bart-large-mnli";
 const PRIORITY_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest";
 
@@ -55,12 +55,16 @@ const URGENT_KEYWORDS = [
   "no electricity",
 ];
 
+// ---------- Express app ----------
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// -------------- helper functions (same as your functions/index.js) --------------
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", service: "grievance-backend" });
+});
 
+// ---------- Helpers ----------
 function extractKeywords(text, topK = 5) {
   const tokens = text.toLowerCase().match(/[a-z]{3,}/g) || [];
   const stopwords = new Set([
@@ -104,7 +108,6 @@ function findUrgentMatches(text) {
   return URGENT_KEYWORDS.filter((k) => lower.includes(k));
 }
 
-// Zero-shot category classification using bart-large-mnli
 async function classifyCategory(text) {
   if (!HF_API_TOKEN) {
     console.warn("HF_API_TOKEN not set");
@@ -136,7 +139,6 @@ async function classifyCategory(text) {
   };
 }
 
-// Priority via CardiffNLP twitter-roberta sentiment (fixed version)
 async function classifyPriority(text) {
   if (!HF_API_TOKEN) {
     console.warn("HF_API_TOKEN not set");
@@ -169,7 +171,7 @@ async function classifyPriority(text) {
 
   if (sentimentLabel === "LABEL_0") {
     if (score > 0.75) priority = "high";
-    else if (score > 0.30) priority = "medium";
+    else if (score > 0.3) priority = "medium";
     else priority = "low";
   } else if (sentimentLabel === "LABEL_1" || sentimentLabel === "LABEL_2") {
     if (score > 0.75) priority = "medium";
@@ -183,9 +185,10 @@ async function classifyPriority(text) {
   };
 }
 
-// ---------- API ROUTE: submit + analyze grievance (replaces Cloud Functions) ----------
-
+// ---------- MAIN ROUTE ----------
 app.post("/submit-grievance", async (req, res) => {
+  console.log("📩 Received grievance:", req.body);
+
   const { title, description, userId } = req.body;
 
   if (!title || !description || !userId) {
@@ -197,7 +200,7 @@ app.post("/submit-grievance", async (req, res) => {
   const text = `${title}\n${description}`.trim();
 
   try {
-    // save grievance in Firestore
+    // 1) create doc
     const newGrievance = {
       title,
       description,
@@ -207,23 +210,28 @@ app.post("/submit-grievance", async (req, res) => {
     };
 
     const docRef = await db.collection("grievances").add(newGrievance);
+    console.log("📝 Created grievance doc:", docRef.id);
 
-    // run AI
-    const [catRes, priRes] = await Promise.all([
-      classifyCategory(text.slice(0, 1000)),
-      classifyPriority(text.slice(0, 3000)),
-    ]);
+    // 2) AI analysis (never crashes whole flow)
+    let catRes = { category: "other", confidence: 0.0 };
+    let priRes = { sentiment: "LABEL_1", sentimentScore: 0.0, priority: "low" };
+
+    try {
+      [catRes, priRes] = await Promise.all([
+        classifyCategory(text.slice(0, 1000)),
+        classifyPriority(text.slice(0, 3000)),
+      ]);
+      console.log("🤖 AI results:", catRes, priRes);
+    } catch (aiErr) {
+      console.error("❌ AI error (using defaults):", aiErr);
+    }
 
     let priority = priRes.priority;
-
-    // urgency rules (your override)
     const urgentMatches = findUrgentMatches(text);
     if (urgentMatches.length > 0) {
       priority = "high";
     }
     const isUrgent = priority === "high";
-
-    // keywords
     const keywords = extractKeywords(text);
 
     const explanation =
@@ -251,7 +259,10 @@ app.post("/submit-grievance", async (req, res) => {
       },
     };
 
+    console.log("🧠 Final hfEngine:", hfEngine);
+
     await docRef.set({ hfEngine }, { merge: true });
+    console.log("✅ hfEngine saved to doc:", docRef.id);
 
     return res.status(200).json({
       message: "Grievance submitted and analyzed successfully!",
@@ -259,7 +270,7 @@ app.post("/submit-grievance", async (req, res) => {
       hfEngine,
     });
   } catch (err) {
-    console.error("Error in /submit-grievance:", err);
+    console.error("❌ Error in /submit-grievance:", err);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
@@ -267,5 +278,5 @@ app.post("/submit-grievance", async (req, res) => {
 // ---------- Start server ----------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Backend listening on http://localhost:${PORT}`);
+  console.log(`🚀 Backend listening on http://localhost:${PORT}`);
 });
