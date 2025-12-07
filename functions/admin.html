@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin – Grievance Dashboard</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+
+  <style>
+    body {
+      background-color: #121212 !important;
+      color: #e0e0e0;
+    }
+    .card {
+      background-color: #1e1e1e;
+      border: 1px solid #333;
+    }
+    .card-header {
+      background: linear-gradient(135deg, #ff6a00 0%, #ee0979 100%);
+      color: white;
+    }
+    .form-control, .form-select {
+      background-color: #2d2d2d !important;
+      border: 1px solid #555 !important;
+      color: #e0e0e0 !important;
+    }
+    .form-control::placeholder {
+      color: #aaa !important;
+    }
+    .badge-priority-high {
+      background: #ff5252;
+    }
+    .badge-priority-medium {
+      background: #ffb300;
+      color: #121212;
+    }
+    .badge-priority-low {
+      background: #66bb6a;
+    }
+    .badge-urgent {
+      background: #ff1744;
+    }
+    .status-chip {
+      padding: 0.15rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+    }
+    .status-open {
+      background: #ff9800;
+      color: #121212;
+    }
+    .status-resolved {
+      background: #4caf50;
+      color: white;
+    }
+    .grievance-row {
+      border-bottom: 1px solid #333;
+      padding: 0.75rem 0;
+    }
+    .grievance-row:last-child {
+      border-bottom: none;
+    }
+    .small-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #bdbdbd;
+    }
+  </style>
+
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+</head>
+<body data-bs-theme="dark">
+  <div class="container-fluid mt-3">
+    <div class="row justify-content-center">
+      <div class="col-xl-10 col-lg-11">
+        <div class="card shadow">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+              <h4 class="mb-0">Admin Dashboard</h4>
+              <small class="text-light-50">AI-powered grievance prioritization</small>
+            </div>
+            <div>
+              <span id="adminEmail" class="me-3 small"></span>
+              <button class="btn btn-sm btn-outline-light" onclick="signOut()">Sign Out</button>
+            </div>
+          </div>
+          <div class="card-body">
+
+            <!-- Admin login -->
+            <div id="adminLoginSection">
+              <h5 class="mb-3">Admin Sign In</h5>
+              <div class="row g-2">
+                <div class="col-md-4">
+                  <input type="email" id="adminEmailInput" class="form-control" placeholder="Admin email">
+                </div>
+                <div class="col-md-4">
+                  <input type="password" id="adminPasswordInput" class="form-control" placeholder="Password">
+                </div>
+                <div class="col-md-4 d-grid">
+                  <button class="btn btn-primary" onclick="adminSignIn()">Sign In as Admin</button>
+                </div>
+              </div>
+              <p class="mt-2 small text-muted">
+                (Use an email that you’ve created in Firebase Auth and added to the ADMIN_EMAILS list in this page.)
+              </p>
+            </div>
+
+            <!-- Dashboard section -->
+            <div id="dashboardSection" style="display:none;">
+              <!-- Filters -->
+              <div class="row g-3 mb-3">
+                <div class="col-md-3">
+                  <label class="small-label mb-1">Priority</label>
+                  <select id="priorityFilter" class="form-select" onchange="renderGrievances()">
+                    <option value="all">All</option>
+                    <option value="high">High only</option>
+                    <option value="medium">Medium only</option>
+                    <option value="low">Low only</option>
+                  </select>
+                </div>
+                <div class="col-md-3">
+                  <label class="small-label mb-1">Category</label>
+                  <select id="categoryFilter" class="form-select" onchange="renderGrievances()">
+                    <option value="all">All</option>
+                    <option value="roads">Roads</option>
+                    <option value="water">Water</option>
+                    <option value="electricity">Electricity</option>
+                    <option value="sanitation">Sanitation</option>
+                    <option value="health">Health</option>
+                    <option value="governance">Governance</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div class="col-md-3">
+                  <label class="small-label mb-1">Status</label>
+                  <select id="statusFilter" class="form-select" onchange="renderGrievances()">
+                    <option value="all">All</option>
+                    <option value="open">Open</option>
+                    <option value="resolved">Resolved</option>
+                  </select>
+                </div>
+                <div class="col-md-3">
+                  <label class="small-label mb-1">Search (title / desc)</label>
+                  <input id="searchInput" class="form-control" placeholder="Search text..." oninput="renderGrievances()">
+                </div>
+              </div>
+
+              <!-- Stats -->
+              <div class="row g-3 mb-3">
+                <div class="col-md-3">
+                  <div class="p-3 rounded" style="background:#212121;">
+                    <div class="small-label mb-1">Total grievances</div>
+                    <div id="statTotal" class="fs-4">0</div>
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <div class="p-3 rounded" style="background:#212121;">
+                    <div class="small-label mb-1">High priority open</div>
+                    <div id="statHighOpen" class="fs-4">0</div>
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <div class="p-3 rounded" style="background:#212121;">
+                    <div class="small-label mb-1">Medium priority open</div>
+                    <div id="statMediumOpen" class="fs-4">0</div>
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <div class="p-3 rounded" style="background:#212121;">
+                    <div class="small-label mb-1">Resolved</div>
+                    <div id="statResolved" class="fs-4">0</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- List -->
+              <div class="mt-3">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <h5 class="mb-0">Grievances</h5>
+                  <small class="text-muted" id="listMeta"></small>
+                </div>
+                <div id="grievanceList">
+                  <div class="text-center text-muted py-5">Loading grievances...</div>
+                </div>
+              </div>
+            </div>
+
+            <div id="status" class="mt-3 text-center fw-bold"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 🔑 Same Firebase config as citizen app
+    const firebaseConfig = {
+      apiKey: "AIzaSyAWTsTs_NEav91LKQ5jLrVf3ojsLYAY4XI",
+      authDomain: "grievance-redressal-syst-627d7.firebaseapp.com",
+      projectId: "grievance-redressal-syst-627d7",
+      storageBucket: "grievance-redressal-syst-627d7.firebasestorage.app",
+      messagingSenderId: "47862331768",
+      appId: "1:47862331768:web:423bb1a0ac46e259d1b08d",
+      measurementId: "G-YX2Y3RFF3P"
+    };
+
+    const app = firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+
+    // 💼 Admin whitelist (replace with your admin emails)
+    const ADMIN_EMAILS = [
+       "aryaadmin@gmail.com",
+    ];
+
+    let grievances = [];   // all loaded docs
+    let unsubscribe = null;
+
+    // ========= Auth / Admin gating =========
+    auth.onAuthStateChanged(user => {
+      if (!user) {
+        document.getElementById("adminLoginSection").style.display = "block";
+        document.getElementById("dashboardSection").style.display = "none";
+        document.getElementById("adminEmail").innerText = "";
+        if (unsubscribe) unsubscribe();
+        return;
+      }
+
+      if (!ADMIN_EMAILS.includes(user.email)) {
+        showStatus("❌ You are signed in, but not an admin.", "text-danger");
+        auth.signOut();
+        return;
+      }
+
+      document.getElementById("adminEmail").innerText = user.email;
+      document.getElementById("adminLoginSection").style.display = "none";
+      document.getElementById("dashboardSection").style.display = "block";
+      showStatus("✅ Signed in as admin.", "text-success");
+
+      if (unsubscribe) unsubscribe();
+
+      const q = db.collection("grievances").orderBy("createdAt", "desc");
+      unsubscribe = q.onSnapshot(snapshot => {
+        grievances = [];
+        snapshot.forEach(doc => {
+          grievances.push({ id: doc.id, ...doc.data() });
+        });
+        renderStats();
+        renderGrievances();
+      }, err => {
+        console.error("Grievance snapshot error:", err);
+        showStatus("❌ Failed to load grievances.", "text-danger");
+      });
+    });
+
+    async function adminSignIn() {
+      const email = document.getElementById("adminEmailInput").value.trim();
+      const password = document.getElementById("adminPasswordInput").value.trim();
+      if (!email || !password) {
+        return showStatus("⚠️ Enter email and password.", "text-warning");
+      }
+      try {
+        await auth.signInWithEmailAndPassword(email, password);
+      } catch (e) {
+        console.error(e);
+        showStatus("❌ " + e.message, "text-danger");
+      }
+    }
+
+    function signOut() {
+      auth.signOut();
+    }
+
+    // ========= Rendering & Filters =========
+    function priorityWeight(p) {
+      if (p === "high") return 3;
+      if (p === "medium") return 2;
+      return 1;
+    }
+
+    function renderStats() {
+      const total = grievances.length;
+      let highOpen = 0, medOpen = 0, resolved = 0;
+
+      grievances.forEach(g => {
+        const status = g.status || "open";
+        const priority = g.hfEngine?.priority || "low";
+
+        if (status === "resolved") {
+          resolved++;
+        } else {
+          if (priority === "high") highOpen++;
+          if (priority === "medium") medOpen++;
+        }
+      });
+
+      document.getElementById("statTotal").innerText = total;
+      document.getElementById("statHighOpen").innerText = highOpen;
+      document.getElementById("statMediumOpen").innerText = medOpen;
+      document.getElementById("statResolved").innerText = resolved;
+    }
+
+    function renderGrievances() {
+      const listEl = document.getElementById("grievanceList");
+      if (!grievances.length) {
+        listEl.innerHTML = '<div class="text-center text-muted py-5">No grievances yet.</div>';
+        document.getElementById("listMeta").innerText = "0 items";
+        return;
+      }
+
+      const priorityFilter = document.getElementById("priorityFilter").value;
+      const categoryFilter = document.getElementById("categoryFilter").value;
+      const statusFilter = document.getElementById("statusFilter").value;
+      const searchText = document.getElementById("searchInput").value.trim().toLowerCase();
+
+      let filtered = grievances.filter(g => {
+        const hf = g.hfEngine || {};
+        const pr = (hf.priority || "low").toLowerCase();
+        const cat = (hf.category || "other").toLowerCase();
+        const st = (g.status || "open").toLowerCase();
+
+        if (priorityFilter !== "all" && pr !== priorityFilter) return false;
+        if (categoryFilter !== "all" && cat !== categoryFilter) return false;
+        if (statusFilter !== "all" && st !== statusFilter) return false;
+
+        if (searchText) {
+          const textBlob = `${g.title || ""} ${g.description || ""}`.toLowerCase();
+          if (!textBlob.includes(searchText)) return false;
+        }
+
+        return true;
+      });
+
+      // sort: high → medium → low, then newest first
+      filtered.sort((a, b) => {
+        const pa = priorityWeight(a.hfEngine?.priority || "low");
+        const pb = priorityWeight(b.hfEngine?.priority || "low");
+        if (pa !== pb) return pb - pa;
+
+        const da = a.createdAt?.toDate?.() || new Date(0);
+        const db = b.createdAt?.toDate?.() || new Date(0);
+        return db - da;
+      });
+
+      document.getElementById("listMeta").innerText = `${filtered.length} items`;
+
+      let html = "";
+      filtered.forEach(g => {
+        const hf = g.hfEngine || {};
+        const priority = (hf.priority || "low").toLowerCase();
+        const category = (hf.category || "other").toLowerCase();
+        const isUrgent = !!hf.isUrgent;
+        const status = (g.status || "open").toLowerCase();
+
+        const created = g.createdAt?.toDate?.() || new Date();
+        const createdStr = created.toLocaleDateString() + " " + created.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+
+        let badgeClass = "badge-priority-low";
+        if (priority === "high") badgeClass = "badge-priority-high";
+        else if (priority === "medium") badgeClass = "badge-priority-medium";
+
+        const urgentBadge = isUrgent
+          ? `<span class="badge ms-1 badge-urgent">URGENT</span>`
+          : "";
+
+        const statusClass = status === "resolved" ? "status-resolved" : "status-open";
+
+        const keywords = (hf.keywords || []).slice(0, 5).join(", ");
+
+        html += `
+          <div class="grievance-row">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <div class="d-flex align-items-center mb-1">
+                  <strong>${g.title || "Untitled"}</strong>
+                  <span class="badge ms-2 ${badgeClass} text-uppercase">${priority || "low"}</span>
+                  ${urgentBadge}
+                  <span class="badge ms-2 bg-secondary text-uppercase">${category}</span>
+                </div>
+                <div class="mb-1 small text-muted">${g.description || ""}</div>
+                <div class="small text-muted">
+                  <span class="me-3"><span class="small-label">Created:</span> ${createdStr}</span>
+                  <span class="me-3"><span class="small-label">User:</span> ${g.userId || "-"}</span>
+                  ${keywords ? `<span class="small-label">Keywords:</span> ${keywords}` : ""}
+                </div>
+              </div>
+              <div class="text-end">
+                <div class="mb-2">
+                  <span class="status-chip ${statusClass}">${status}</span>
+                </div>
+                ${status === "open" ? `
+                  <button class="btn btn-sm btn-outline-success mb-1" onclick="markResolved('${g.id}')">
+                    Mark Resolved
+                  </button>
+                ` : `
+                  <button class="btn btn-sm btn-outline-secondary" disabled>Resolved</button>
+                `}
+              </div>
+            </div>
+          </div>
+        `;
+      });
+
+      listEl.innerHTML = html || '<div class="text-center text-muted py-5">No grievances match these filters.</div>';
+    }
+
+    async function markResolved(id) {
+      try {
+        await db.collection("grievances").doc(id).update({
+          status: "resolved"
+        });
+        showStatus("✅ Marked as resolved.", "text-success");
+      } catch (e) {
+        console.error(e);
+        showStatus("❌ Failed to update status.", "text-danger");
+      }
+    }
+
+    // ========= Status helper =========
+    function showStatus(msg, className) {
+      const el = document.getElementById("status");
+      el.innerText = msg;
+      el.className = `mt-2 text-center fw-bold ${className}`;
+      setTimeout(() => {
+        if (el.innerText === msg) el.innerText = "";
+      }, 5000);
+    }
+  </script>
+</body>
+</html>
