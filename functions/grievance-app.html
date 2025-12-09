@@ -85,6 +85,7 @@
             </div>
 
             <div id="mainSection" style="display:none;">
+
               <h5 class="text-center mb-3">Submit a Grievance</h5>
               <div class="mb-3">
                 <input type="text" id="title" class="form-control" placeholder="Title (e.g., Road Repair)" />
@@ -92,6 +93,17 @@
               <div class="mb-3">
                 <textarea id="description" class="form-control" rows="3" placeholder="Describe your issue..."></textarea>
               </div>
+              <div class="mb-3">
+  <label class="form-label">📍 Your Location</label>
+  <div class="d-flex gap-2">
+    <button type="button" class="btn btn-outline-info btn-sm" onclick="getLocation()">
+      Use My Location
+    </button>
+    <span id="locationStatus" class="align-self-center text-muted small"></span>
+  </div>
+  <input type="hidden" id="latitude" />
+  <input type="hidden" id="longitude" />
+</div>
               <div class="d-grid gap-2 mb-4">
                 <button class="btn btn-success" onclick="submitGrievance()">Submit Grievance</button>
                 <button class="btn btn-outline-secondary" onclick="signOut()">Sign Out</button>
@@ -214,47 +226,63 @@
     function signOut() {
       auth.signOut();
     }
+    function getLocation() {
+  const statusEl = document.getElementById('locationStatus');
+  if (!navigator.geolocation) {
+    statusEl.innerText = "📍 Not supported";
+    return;
+  }
+  statusEl.innerText = "📍 Getting location...";
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      document.getElementById('latitude').value = pos.coords.latitude;
+      document.getElementById('longitude').value = pos.coords.longitude;
+      statusEl.innerText = `📍 Captured`;
+      statusEl.className = "align-self-center text-success small";
+    },
+    () => {
+      statusEl.innerText = "📍 Denied";
+      statusEl.className = "align-self-center text-danger small";
+    }
+  );
+}
 
     // Submit
-  async function submitGrievance() {
-    const user = auth.currentUser;
-    const title = document.getElementById('title').value.trim();
-    const desc = document.getElementById('description').value.trim();
+async function submitGrievance() {
+  const user = auth.currentUser;
+  const title = document.getElementById('title').value.trim();
+  const desc = document.getElementById('description').value.trim();
+  const latitude = document.getElementById('latitude').value;
+  const longitude = document.getElementById('longitude').value;
 
-    if (!user) return showStatus("❌ You must be signed in!", "text-danger");
-    if (!title || !desc) return showStatus("⚠️ Title and description required.", "text-warning");
+  if (!user) return showStatus("❌ You must be signed in!", "text-danger");
+  if (!title || !desc) return showStatus("⚠️ Title and description required.", "text-warning");
 
-    try {
-      // 🔁 CALL BACKEND instead of writing directly to Firestore
-      const res = await fetch(`${BACKEND_URL}/submit-grievance`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title,
-          description: desc,
-          userId: user.uid
-        })
-      });
+  try {
+    const newGrievance = {
+      title,
+      description: desc,
+      userId: user.uid,
+      status: "open",
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      ...(latitude && longitude && {
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude)
+      })
+    };
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        console.error("Backend error:", errData);
-        throw new Error(errData.error || `HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      console.log("✅ Backend response:", data);
-
-      // Clear form
-      document.getElementById('title').value = '';
-      document.getElementById('description').value = '';
-
-      showStatus("✅ Submitted & analyzed by AI!", "text-success");
-    } catch (e) {
-      console.error("submitGrievance error:", e);
-      showStatus("❌ Failed: " + e.message, "text-danger");
-    }
+    await db.collection("grievances").add(newGrievance);
+    document.getElementById('title').value = '';
+    document.getElementById('description').value = '';
+    document.getElementById('latitude').value = '';
+    document.getElementById('longitude').value = '';
+    document.getElementById('locationStatus').innerText = '';
+    showStatus("✅ Grievance submitted!", "text-success");
+  } catch (e) {
+    console.error(e);
+    showStatus("❌ Failed: " + e.message, "text-danger");
   }
+}
 
 
     function showStatus(msg, className) {
