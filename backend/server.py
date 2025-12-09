@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -9,7 +8,7 @@ import requests
 import re
 from collections import Counter
 import logging
-import json
+import json as json_lib  # ✅ FIX 1: Renamed to avoid conflict
 from groq import Groq
 
 # Set up logging
@@ -27,8 +26,8 @@ try:
     # Option 1: From environment variable (for Render)
     firebase_key_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
     if firebase_key_json:
-        import json
-        cred = credentials.Certificate(json.loads(firebase_key_json))
+        # ✅ FIX 1: Use json_lib instead of json
+        cred = credentials.Certificate(json_lib.loads(firebase_key_json))
         logger.info("✅ Using Firebase credentials from FIREBASE_SERVICE_ACCOUNT env var")
     else:
         # Option 2: Local file (for local dev)
@@ -48,7 +47,7 @@ except Exception as e:
 
 # Hugging Face Config
 HF_API_TOKEN = os.getenv("HF_API_TOKEN") or os.getenv("HUGGINGFACE_API_TOKEN")
-HF_BASE_URL = "https://router.huggingface.co/hf-inference"
+HF_BASE_URL = "https://router.huggingface.co/hf-inference"  # ✅ FIX 2: Removed trailing spaces
 logger.info(f"HF_API_TOKEN: {'✅ Set' if HF_API_TOKEN else '❌ Not Set'}")
 
 # Groq Config
@@ -258,7 +257,7 @@ def refine_with_groq(text, initial_category, initial_priority, hf_raw_label): # 
         )
         
         json_string = chat_completion.choices[0].message.content
-        parsed_content = json.loads(json_string)
+        parsed_content = json_lib.loads(json_string)  # ✅ Use json_lib here too
 
         logger.info(f"✅ Groq Refinement Result: {parsed_content}")
         return parsed_content
@@ -272,6 +271,11 @@ def refine_with_groq(text, initial_category, initial_priority, hf_raw_label): # 
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "service": "grievance-backend"})
+
+# ✅ Added test route for debugging
+@app.route("/test", methods=["GET"])
+def test_route():
+    return "✅ Flask is working!"
 
 @app.route("/submit-grievance", methods=["POST"])
 def submit_grievance():
