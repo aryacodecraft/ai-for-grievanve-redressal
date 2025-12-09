@@ -24,19 +24,26 @@ CORS(app)
 
 # Firebase Admin init
 try:
-    # Assumes 'serviceAccountKey.json' is in the 'backend' directory
-    service_account_path = os.path.join(os.path.dirname(__file__), "serviceAccountKey.json")
-    if os.path.exists(service_account_path):
-        cred = credentials.Certificate(service_account_path)
+    # Option 1: From environment variable (for Render)
+    firebase_key_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+    if firebase_key_json:
+        import json
+        cred = credentials.Certificate(json.loads(firebase_key_json))
+        logger.info("✅ Using Firebase credentials from FIREBASE_SERVICE_ACCOUNT env var")
     else:
-        # Fallback for cloud environments or if the user configures it differently
-        cred = credentials.ApplicationDefault()
+        # Option 2: Local file (for local dev)
+        service_account_path = os.path.join(os.path.dirname(__file__), "serviceAccountKey.json")
+        if os.path.exists(service_account_path):
+            cred = credentials.Certificate(service_account_path)
+            logger.info("✅ Using local serviceAccountKey.json")
+        else:
+            raise Exception("No Firebase credentials found: set FIREBASE_SERVICE_ACCOUNT or add serviceAccountKey.json")
 
     if not firebase_admin._apps:
         firebase_admin.initialize_app(cred)
     db = firestore.client()
 except Exception as e:
-    logger.error(f"Error initializing Firebase Admin: {e}")
+    logger.error(f"❌ Error initializing Firebase Admin: {e}")
     db = None
 
 # Hugging Face Config
