@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 firebase-admin==6.9.0
 requests==2.32.3
 groq==0.13.0
+gunicorn==23.0.0
