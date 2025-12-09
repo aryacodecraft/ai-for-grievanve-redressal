@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'backend'))
 try:
     from server import (
-        classify_category, classify_priority, refine_with_groq, # <--- UPDATED: Import refine_with_groq
+        classify_category, classify_priority, refine_with_groq,
         infer_category_from_keywords, find_urgent_matches, extract_keywords,
         normalize_sentiment,
         CATEGORY_MODEL, PRIORITY_MODEL, GROQ_MODEL,
@@ -68,6 +68,10 @@ def recategorize_all():
         data = doc_snap.to_dict()
         doc_id = doc_snap.id
         text = f"{data.get('title', '')}\n{data.get('description', '')}".strip()
+
+        # ⭐️ NEW: Retrieve latitude and longitude from the document data
+        latitude = data.get('latitude')
+        longitude = data.get('longitude')
 
         logger.info(f"➡ Reprocessing {doc_id}")
 
@@ -149,7 +153,19 @@ def recategorize_all():
                 },
             }
 
-            doc_snap.reference.set({"hfEngine": hf_engine}, merge=True)
+            # ⭐️ NEW: Prepare update payload
+            update_data = {
+                "hfEngine": hf_engine
+            }
+            
+            # ⭐️ NEW: Conditionally include location data in the update payload
+            if latitude is not None:
+                update_data['latitude'] = latitude
+            if longitude is not None:
+                update_data['longitude'] = longitude
+
+            # Use the update_data payload with merge=True
+            doc_snap.reference.set(update_data, merge=True)
             logger.info(f"   ✅ Updated: {doc_id} (Category: {category}, Priority: {priority})\n")
 
         except Exception as e:
