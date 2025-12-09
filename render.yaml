@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: grievance-ai-backend
+    runtime: python
+    env: python
+    region: frankfurt        # or 'oregon' if you're outside EU
+    plan: free
+    buildCommand: "echo 'No build step needed'"
+    startCommand: "python backend/server.py"
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: HF_API_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false

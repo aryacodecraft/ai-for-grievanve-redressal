@@ -1,6 +1,6 @@
-# Python requirements.txt (Dependencies for Flask, Firebase, Requests/API, and .env loading)
-Flask==3.0.3
-flask-cors==4.0.1
+flask==3.0.3
+flask-cors==5.0.0
 python-dotenv==1.0.1
-firebase-admin==6.5.0
+firebase-admin==6.10.0
 requests==2.32.3
+groq==0.13.0
