@@ -1,9 +1,10 @@
+version: "1"
 services:
   - type: web
     name: grievance-ai-backend
     runtime: python
     env: python
-    region: oregon        # or 'oregon' if you're outside EU
+    region: oregon
     plan: free
     buildCommand: "echo 'No build step needed'"
     startCommand: "python backend/server.py"
