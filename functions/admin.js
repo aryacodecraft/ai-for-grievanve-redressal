@@ -1,8 +1,3 @@
-/* admin.js — TF-IDF-only summary (preserves TF-IDF UI like screenshot)
-   - Paste this entire file as admin.js
-   - Requires tfidf.js (if absent, UI shows "TFIDF not available")
-*/
-
 /* FIREBASE CONFIG */
 const firebaseConfig = {
   apiKey: "AIzaSyAWTsTs_NEav91LKQ5jLrVf3ojsLYAY4XI",
@@ -98,7 +93,6 @@ auth.onAuthStateChanged(user=>{
   initMap();
 
   if(unsubscribe) { try{ unsubscribe(); } catch(e){} }
-  // keep server ordering, but client may re-sort after filtering — that's expected
   unsubscribe = db.collection("grievances").orderBy("createdAt", "desc").onSnapshot(snap=>{
     grievances = [];
     snap.forEach(doc => grievances.push({ id: doc.id, ...doc.data() }));
@@ -149,24 +143,15 @@ function onFilterChange(){ currentPage = 1; renderGrievances(); }
 function onPageSizeChange(){ pageSize = Number(document.getElementById("pageSizeSelect").value) || 10; currentPage = 1; renderGrievances(); }
 function priorityWeight(p){ if(p==="high") return 3; if(p==="medium") return 2; return 1; }
 
-/* normalize various createdAt shapes into ms epoch */
+/* normalize createdAt to epoch ms */
 function asEpoch(x){
   if(!x) return 0;
-  // Firestore Timestamp
   if(typeof x.toDate === "function") {
     try { return x.toDate().getTime(); } catch(e) {}
   }
-  // Date object
   if(x instanceof Date) return x.getTime();
-  // number: seconds or ms
-  if(typeof x === "number") {
-    return x > 1e12 ? x : x * 1000;
-  }
-  // string (ISO)
-  if(typeof x === "string") {
-    const t = Date.parse(x);
-    if(!Number.isNaN(t)) return t;
-  }
+  if(typeof x === "number") return x > 1e12 ? x : x * 1000;
+  if(typeof x === "string") { const t = Date.parse(x); if(!Number.isNaN(t)) return t; }
   return 0;
 }
 
@@ -179,9 +164,6 @@ function renderGrievances(){
   const categoryFilter = document.getElementById("categoryFilter").value;
   const statusFilter = document.getElementById("statusFilter").value;
   const searchText = (document.getElementById("searchInput").value || "").trim().toLowerCase();
-  const rawSortVal = (document.getElementById("sortOrder") || {}).value || "newest";
-  const sortLower = String(rawSortVal).toLowerCase();
-  const wantOldest = sortLower.includes("old") || sortLower.includes("oldest");
 
   let filtered = grievances.filter(g=>{
     const hf = g.hfEngine || {};
@@ -198,24 +180,17 @@ function renderGrievances(){
     return true;
   });
 
-  // cluster filter:
   if(window._selectedClusterIds && window._selectedClusterIds.size){
     filtered = filtered.filter(g => window._selectedClusterIds.has(g.id));
   }
 
-  // SORT: date PRIMARY (newest/oldest), priority SECONDARY (high->low), then createdAt fallback to 0
   filtered.sort((a,b)=>{
     const ta = asEpoch(a.createdAt);
     const tb = asEpoch(b.createdAt);
-    if(ta !== tb){
-      // if user wants oldest first, smaller epoch should come first
-      return wantOldest ? ta - tb : tb - ta;
-    }
-    // tie-breaker: priority (high -> low)
+    if(ta !== tb) return tb - ta;
     const pa = priorityWeight(a.hfEngine?.priority || "low");
     const pb = priorityWeight(b.hfEngine?.priority || "low");
     if(pa !== pb) return pb - pa;
-    // final tiebreaker: createdAt string compare (stable)
     return String(b.id || "").localeCompare(String(a.id || ""));
   });
 
@@ -234,17 +209,19 @@ function renderGrievances(){
     const category = hf.category || "other";
     const urgent = !!hf.isUrgent;
     const status = g.status || "open";
-    // try to format createdAt nicely: prefer createdAt.toDate if present
     let createdDate = null;
     try { createdDate = (g.createdAt && typeof g.createdAt.toDate === 'function') ? g.createdAt.toDate() : (g.createdAt instanceof Date ? g.createdAt : (typeof g.createdAt === 'number' ? new Date(asEpoch(g.createdAt)) : (typeof g.createdAt === 'string' ? new Date(asEpoch(g.createdAt)) : null))); } catch(e) { createdDate = null; }
     const created = createdDate || new Date();
     const createdStr = created.toLocaleDateString() + " " + created.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
     const badgeClass = priority==="high" ? "badge-priority-high" : (priority==="medium" ? "badge-priority-medium" : "badge-priority-low");
 
+    // thumbnail removed per request — keep list compact, no inline image
+    const thumbHtml = "";
+
     html += `
       <div class="grievance-row" onclick="onRowClick('${g.id}')">
         <div class="d-flex justify-content-between align-items-start">
-          <div>
+          <div style="max-width:72%;">
             <div class="d-flex align-items-center mb-1">
               <strong>${escapeHtml(g.title || "Untitled")}</strong>
               <span class="badge ms-2 ${badgeClass}">${escapeHtml(priority)}</span>
@@ -255,6 +232,7 @@ function renderGrievances(){
               ${escapeHtml((g.description || "").slice(0,140))}
               ${(g.description || "").length > 140 ? "..." : ""}
             </div>
+            ${thumbHtml}
             <div class="small text-muted">
               <span class="me-3"><span class="small-label">Created:</span> ${escapeHtml(createdStr)}</span>
               <span class="me-3"><span class="small-label">User:</span> ${escapeHtml(g.userId || "-")}</span>
@@ -335,7 +313,8 @@ function updateMapMarkers(list){
     if(Number.isNaN(lat) || Number.isNaN(lon)) return;
     const marker = L.marker([lat, lon]).addTo(markersLayer);
     markersById[g.id] = marker;
-    marker.bindPopup(`<strong>${escapeHtml(g.title || "Untitled")}</strong><br/>${escapeHtml(g.userId || "-")}`);
+    const popupHtml = `<strong>${escapeHtml(g.title || "Untitled")}</strong><br/>${g.imageUrl ? `<img src="${escapeHtml(g.imageUrl)}" style="max-width:180px;max-height:120px;display:block;margin-top:6px;border-radius:6px;">` : ''}<br/>${escapeHtml(g.userId || "-")}`;
+    marker.bindPopup(popupHtml);
     pts.push([lat, lon]);
   });
   if(pts.length) try{ map.fitBounds(pts, { padding: [40,40] }); }catch(e){}
@@ -352,141 +331,133 @@ function onRowClick(id){
   if(g.latitude != null && g.longitude != null) focusOnMarker(id);
 }
 
-function showDetailModal(g){
+/* Simple, robust showDetailModal — injects image into #gd-image */
+function showDetailModal(g) {
   const m = document.getElementById("grievance-detail-modal");
-  if(!m) return;
-  m.style.display = "block";
-  m.classList.add("center");
+  if (!m) return;
+
+  console.debug("showDetailModal g.id:", g.id, "imageUrl:", g.imageUrl);
+
+  const titleEl = document.getElementById("gd-title");
+  const descEl = document.getElementById("gd-desc");
+  const badgesEl = document.getElementById("gd-badges");
+  const metaEl = document.getElementById("gd-meta");
+  const latlonEl = document.getElementById("gd-latlon");
+  const gdImage = document.getElementById("gd-image");
+
+  if (titleEl) titleEl.innerText = g.title || "Untitled";
+  if (descEl) descEl.innerText = g.description || "";
 
   const hf = g.hfEngine || {};
   const priority = (hf.priority || "low").toUpperCase();
   const cat = (hf.category || "other").toUpperCase();
-
-  document.getElementById("gd-title").innerText = g.title || "Untitled";
-  document.getElementById("gd-desc").innerText = g.description || "";
-
   const priorityColor = priority === "HIGH" ? "#ff5252" : (priority === "MEDIUM" ? "#ffb300" : "#66bb6a");
-  document.getElementById("gd-badges").innerHTML = `
-    <span style="background:${priorityColor};padding:4px 8px;border-radius:999px;color:white">${priority}</span>
-    ${hf.isUrgent ? `<span style="background:#ff1744;padding:4px 8px;border-radius:999px;color:white;margin-left:6px">URGENT</span>` : ""}
-    <span style="background:#6c757d;padding:4px 8px;border-radius:999px;color:white;margin-left:6px">${cat}</span>
+
+  if (badgesEl) badgesEl.innerHTML = `
+    <span style="background:${priorityColor};padding:6px 10px;border-radius:999px;color:white;font-weight:600">${escapeHtml(priority)}</span>
+    ${hf.isUrgent ? `<span style="background:#ff1744;padding:6px 10px;border-radius:999px;color:white;margin-left:8px">URGENT</span>` : ""}
+    <span style="background:#6c757d;padding:6px 10px;border-radius:999px;color:white;margin-left:8px">${escapeHtml(cat)}</span>
   `;
 
-  const created = g.createdAt?.toDate?.() || new Date();
-  document.getElementById("gd-meta").innerHTML = `
-    <div><strong>Created:</strong> ${created.toLocaleString()}</div>
+  const createdDate = g.createdAt?.toDate?.() || (g.createdAt instanceof Date ? g.createdAt : new Date(asEpoch(g.createdAt) || Date.now()));
+  if (metaEl) metaEl.innerHTML = `
+    <div><strong>Created:</strong> ${createdDate.toLocaleString()}</div>
     <div><strong>User:</strong> ${escapeHtml(g.userId || "-")}</div>
-    <div><strong>Keywords:</strong> ${(hf.keywords || []).slice(0,6).join(", ")}</div>
+    <div><strong>Keywords:</strong> ${(hf.keywords || []).slice(0,6).map(escapeHtml).join(", ")}</div>
   `;
 
-  document.getElementById("gd-latlon").innerHTML = (g.latitude != null && g.longitude != null)
+  if (latlonEl) latlonEl.innerHTML = (g.latitude != null && g.longitude != null)
     ? `<strong>Lat/Lon:</strong> ${Number(g.latitude).toFixed(6)}, ${Number(g.longitude).toFixed(6)}`
     : `<strong>Lat/Lon:</strong> Not provided`;
 
-  const mapBtn = document.getElementById("gd-map-btn"); if(mapBtn) mapBtn.onclick = ()=> focusOnMarker(g.id);
-  const resolveBtn = document.getElementById("gd-resolve-btn"); if(resolveBtn) resolveBtn.onclick = async (e)=>{ e.stopPropagation(); await markResolved(g.id); hideDetailModal(); };
-}
+  // === Image injection ===
+  if (g.imageUrl) {
+    gdImage.style.display = "block";
+    const img = document.createElement("img");
+    img.alt = "grievance image";
+    img.loading = "lazy";
+    img.style.maxWidth = "100%";
+    img.style.maxHeight = "480px";
+    img.style.objectFit = "contain";
+    img.style.borderRadius = "8px";
+    img.style.border = "1px solid rgba(0,0,0,0.06)";
+    img.crossOrigin = "anonymous";
+    img.src = g.imageUrl;
 
-function hideDetailModal(){ const m = document.getElementById("grievance-detail-modal"); if(!m) return; m.style.display = "none"; m.classList.remove("center"); }
+    gdImage.innerHTML = "";
+    gdImage.appendChild(img);
 
-/* robust close wiring */
-(function wireModalClose(){
-  const old = document.getElementById("gd-close");
-  if(old && old.parentNode){ const clone = old.cloneNode(true); old.parentNode.replaceChild(clone, old); }
-  const btn = document.getElementById("gd-close");
-  if(btn) btn.addEventListener("click", e=>{ e.preventDefault(); e.stopPropagation(); hideDetailModal(); });
-  document.addEventListener("click", e=>{
-    const modal = document.getElementById("grievance-detail-modal");
-    if(!modal || modal.style.display !== "block") return;
-    if(!modal.contains(e.target)) hideDetailModal();
-  });
-  document.addEventListener("keydown", e=>{
-    if(e.key === "Escape"){ const modal = document.getElementById("grievance-detail-modal"); if(modal && modal.style.display === "block") hideDetailModal(); }
-  });
-})();
+    const link = document.createElement("div");
+    link.style.marginTop = "8px";
+    link.innerHTML = `<a href="${escapeHtml(g.imageUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-light">Open original</a>`;
+    gdImage.appendChild(link);
 
-/* TF-IDF clustering (only) */
-/* run client clustering: TF-IDF only */
-function runClientClustering(){
-  tfidfClusters = [];
-  if(window.TFIDF && TFIDF.run){
-    try{
-      tfidfClusters = TFIDF.run(grievances || []);
-      renderTfidfClustersUI();
-    }catch(e){
-      console.warn("tfidf failed", e);
-      tfidfClusters = [];
-      const tfDiv = document.getElementById("tfidfClusters");
-      if(tfDiv) tfDiv.innerHTML = "<div class='text-muted'>TFIDF clustering failed</div>";
-    }
+    img.onload = () => {};
+    img.onerror = () => {
+      gdImage.innerHTML = `<div style="color:#f88">Failed to load image preview. <a href="${escapeHtml(g.imageUrl)}" target="_blank" rel="noopener noreferrer">Open original</a></div>`;
+    };
   } else {
-    const tfDiv = document.getElementById("tfidfClusters");
-    if(tfDiv) tfDiv.innerHTML = "<div class='text-muted'>TFIDF not available</div>";
+    gdImage.style.display = "none";
+    gdImage.innerHTML = "";
+  }
+
+  const mapBtn = document.getElementById("gd-map-btn");
+  if (mapBtn) mapBtn.onclick = (e) => { e.stopPropagation(); focusOnMarker(g.id); };
+
+  const resolveBtn = document.getElementById("gd-resolve-btn");
+  if (resolveBtn) {
+    resolveBtn.onclick = async (e) => {
+      e.stopPropagation();
+      await markResolved(g.id);
+      hideDetailModal();
+    };
+  }
+
+  // Show modal
+  m.style.display = "block";
+  requestAnimationFrame(() => m.classList.add("center"));
+
+  // Attach outside/escape handlers once
+  if (!m._outsideClickHandler) {
+    m._outsideClickHandler = function outsideClickHandler(evt) {
+      if (!m.contains(evt.target)) hideDetailModal();
+    };
+    document.addEventListener("click", m._outsideClickHandler);
+  }
+  if (!m._escHandler) {
+    m._escHandler = function escHandler(e) { if (e.key === "Escape") hideDetailModal(); };
+    document.addEventListener("keydown", m._escHandler);
+  }
+
+  // Ensure close button always works: remove previous listeners then attach
+  const closeBtn = document.getElementById("gd-close");
+  if (closeBtn) {
+    try { closeBtn.replaceWith(closeBtn.cloneNode(true)); } catch(e) {}
+    const freshClose = document.getElementById("gd-close");
+    if (freshClose) {
+      freshClose.addEventListener("click", function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        hideDetailModal();
+      });
+    }
   }
 }
 
-/* render TF-IDF clusters in the same style as your screenshot */
-function renderTfidfClustersUI(){
-  if(!clustersList) return;
-  // create top header
-  clustersList.innerHTML = `<div style="font-weight:700;margin-bottom:8px;">TF-IDF clusters</div>`;
-  const tfDiv = document.createElement("div"); tfDiv.id = "tfidfClusters"; tfDiv.style.marginTop = "8px";
-  clustersList.appendChild(tfDiv);
-
-  if(!tfidfClusters || !tfidfClusters.length){
-    tfDiv.innerHTML = "<div class='text-muted'>No TF-IDF clusters</div>";
-    return;
-  }
-
-  // render clusters as cards like screenshot
-  tfDiv.innerHTML = "";
-  tfidfClusters.forEach(c=>{
-    // area in TFIDF output may be absent; show 'Unknown' to match screenshot
-    const title = c.area || "Unknown";
-    const keywords = Array.isArray(c.keywords) ? c.keywords.slice(0,6).join(", ") : "";
-    const sample = (c.sample || "").slice(0,120);
-    const size = c.size || (Array.isArray(c.ids) ? c.ids.length : 1);
-    // single cluster block
-    const block = document.createElement("div");
-    block.className = "summary-cluster";
-    block.style.display = "flex";
-    block.style.justifyContent = "space-between";
-    block.style.alignItems = "center";
-    block.style.padding = "10px";
-    block.style.marginBottom = "8px";
-    block.innerHTML = `
-      <div style="flex:1;min-width:0;">
-        <div style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(title)}</div>
-        <div class="small text-muted" style="margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(keywords)}</div>
-        <div class="small text-muted mt-1" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sample)}</div>
-      </div>
-      <div style="flex:0 0 auto;margin-left:8px;text-align:right">
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
-          <div class="badge bg-light text-dark" style="font-size:0.9rem;padding:6px 8px;border-radius:10px">${size}</div>
-          <button class="btn btn-sm btn-outline-light btn-tview" data-id="${escapeHtml(c.clusterId || "")}" style="padding:6px 10px">View</button>
-        </div>
-      </div>
-    `;
-    tfDiv.appendChild(block);
-  });
-
-  // wire view buttons
-  document.querySelectorAll(".btn-tview").forEach(b=>b.addEventListener("click", e=>{ const id = e.currentTarget.dataset.id; applyClusterFilter(id); }));
+function hideDetailModal(){
+  const m = document.getElementById("grievance-detail-modal");
+  if(!m) return;
+  m.classList.remove("center");
+  // don't remove handlers permanently if you want them reused; just clean references for safety
+  if(m._outsideClickHandler) { try{ document.removeEventListener("click", m._outsideClickHandler); }catch(e){} m._outsideClickHandler = null; }
+  if(m._escHandler) { try{ document.removeEventListener("keydown", m._escHandler); }catch(e){} m._escHandler = null; }
+  setTimeout(()=>{ m.style.display = "none"; }, 260);
 }
 
-/* apply TFIDF cluster filter */
-function applyClusterFilter(clusterId){
-  if(!clusterId) { window._selectedClusterIds = null; renderGrievances(); return; }
-  const c = tfidfClusters.find(x => String(x.clusterId) === String(clusterId));
-  if(!c) return;
-  const ids = new Set((c.ids || []).slice(0).map(i => {
-    // TFIDF might store direct doc ids or indices — handle both
-    const maybeId = typeof i === "string" ? i : (grievances[i]?.id || null);
-    return maybeId;
-  }).filter(Boolean));
-  window._selectedClusterIds = ids;
-  renderGrievances();
-}
+/* cluster UI and wiring (kept minimal) */
+function runClientClustering(){ try{ const clusters = TFIDF.run(grievances || []); tfidfClusters = clusters; renderTfidfClustersUI(); }catch(e){ console.warn(e); } }
+function renderTfidfClustersUI(){ if(!clustersList) return; clustersList.innerHTML = `<div style="font-weight:700;margin-bottom:8px;">TF-IDF clusters</div>`; const tfDiv = document.createElement("div"); tfDiv.id = "tfidfClusters"; tfDiv.style.marginTop = "8px"; clustersList.appendChild(tfDiv); if(!tfidfClusters || !tfidfClusters.length){ tfDiv.innerHTML = "<div class='text-muted'>No TF-IDF clusters</div>"; return; } tfDiv.innerHTML = ""; tfidfClusters.forEach(c=>{ const title = c.area || "Unknown"; const keywords = Array.isArray(c.keywords) ? c.keywords.slice(0,6).join(", ") : ""; const sample = (c.sample || "").slice(0,120); const size = c.size || (Array.isArray(c.ids) ? c.ids.length : 1); const block = document.createElement("div"); block.className = "summary-cluster"; block.style.display = "flex"; block.style.justifyContent = "space-between"; block.style.alignItems = "center"; block.style.padding = "10px"; block.style.marginBottom = "8px"; block.innerHTML = `<div style="flex:1;min-width:0;"><div style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(title)}</div><div class="small text-muted" style="margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(keywords)}</div><div class="small text-muted mt-1" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sample)}</div></div><div style="flex:0 0 auto;margin-left:8px;text-align:right"><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px"><div class="badge bg-light text-dark" style="font-size:0.9rem;padding:6px 8px;border-radius:10px">${size}</div><button class="btn btn-sm btn-outline-light btn-tview" data-id="${escapeHtml(c.clusterId || "")}" style="padding:6px 10px">View</button></div></div>`; tfDiv.appendChild(block); }); document.querySelectorAll(".btn-tview").forEach(b=>b.addEventListener("click", e=>{ const id = e.currentTarget.dataset.id; applyClusterFilter(id); })); }
+function applyClusterFilter(clusterId){ if(!clusterId) { window._selectedClusterIds = null; renderGrievances(); return; } const c = tfidfClusters.find(x => String(x.clusterId) === String(clusterId)); if(!c) return; const ids = new Set((c.ids || []).slice(0).map(i => { const maybeId = typeof i === "string" ? i : (grievances[i]?.id || null); return maybeId; }).filter(Boolean)); window._selectedClusterIds = ids; renderGrievances(); }
 
 /* expose admin API safely */
 window._admin = window._admin || {};
