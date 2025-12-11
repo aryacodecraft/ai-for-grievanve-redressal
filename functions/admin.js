@@ -1,6 +1,9 @@
-/* admin.js — restored full controller with TF-IDF integration */
+/* admin.js — TF-IDF-only summary (preserves TF-IDF UI like screenshot)
+   - Paste this entire file as admin.js
+   - Requires tfidf.js (if absent, UI shows "TFIDF not available")
+*/
 
-/* CONFIG */
+/* FIREBASE CONFIG */
 const firebaseConfig = {
   apiKey: "AIzaSyAWTsTs_NEav91LKQ5jLrVf3ojsLYAY4XI",
   authDomain: "grievance-redressal-syst-627d7.firebaseapp.com",
@@ -11,10 +14,11 @@ const firebaseConfig = {
   measurementId: "G-YX2Y3RFF3P"
 };
 
-if(!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 
+/* ADMIN EMAILS */
 const ADMIN_EMAILS = ["aryaadmin@gmail.com"];
 
 /* UI elements */
@@ -23,13 +27,11 @@ const dashboardSection = document.getElementById("dashboardSection");
 const adminEmailSpan = document.getElementById("adminEmail");
 const signOutBtn = document.getElementById("signOutBtn");
 const statusEl = document.getElementById("status");
+const dashboardWrap = document.getElementById("dashboardWrap");
+
 const summaryPanel = document.getElementById("summaryPanel");
 const summaryBtn = document.getElementById("summaryBtn");
-const collapseSummary = document.getElementById("collapseSummary");
-const clearCluster = document.getElementById("clearCluster");
 const clustersList = document.getElementById("clustersList");
-const summaryLoading = document.getElementById("summaryLoading");
-const dashboardWrap = document.getElementById("dashboardWrap");
 
 let grievances = [];
 let unsubscribe = null;
@@ -39,122 +41,102 @@ let currentPage = 1;
 let pageSize = 10;
 
 /* map state */
-let map, markersLayer;
+let map = null;
+let markersLayer = null;
 const markersById = {};
 
-/* TFIDF state */
-let clusters = [];
-let tfidfState = null;
+/* TFIDF clusters only */
+let tfidfClusters = [];
 
-/* HELPERS */
+/* helpers */
 function showStatus(msg, cls) {
-  statusEl.innerText = msg;
-  statusEl.className = `mt-2 text-center fw-bold ${cls || ''}`;
-  console.log("STATUS:", msg);
-  setTimeout(()=> { if(statusEl.innerText === msg) statusEl.innerText = ""; }, 5000);
+  if (statusEl) {
+    statusEl.innerText = msg;
+    statusEl.className = `mt-2 text-center fw-bold ${cls || ""}`;
+    setTimeout(()=> { if (statusEl.innerText === msg) statusEl.innerText = ""; }, 3500);
+  } else {
+    console.log("STATUS:", msg);
+  }
+}
+function escapeHtml(s) {
+  if (s === null || s === undefined) return "";
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function escapeHtml(str) {
-  if(!str && str !== 0) return '';
-  return String(str)
-    .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
-    .replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-/* MAP */
-function initMap() {
-  if(map) return;
-  map = L.map('map', { zoomControl:true }).setView([20.5937,78.9629], 5);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
+/* map init */
+function initMap(){
+  if (map) return;
+  map = L.map("map").setView([20.5937,78.9629], 5);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
   markersLayer = L.featureGroup().addTo(map);
   setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} }, 300);
 }
 
-/* DESCRIPTION TOGGLE */
-function toggleDescription(id){
-  const shortEl = document.getElementById(`desc-${id}`);
-  const fullEl = document.getElementById(`desc-full-${id}`);
-  const btn = event.target;
-
-  if(fullEl.classList.contains("d-none")){
-    // Expand
-    fullEl.classList.remove("d-none");
-    shortEl.classList.add("d-none");
-    btn.textContent = "Show Less";
-  } else {
-    // Collapse
-    fullEl.classList.add("d-none");
-    shortEl.classList.remove("d-none");
-    btn.textContent = "Show More";
-  }
-}
-
-
-/* AUTH */
+/* auth */
 auth.onAuthStateChanged(user=>{
   if(!user){
-    adminLoginSection.style.display = "block";
-    dashboardSection.style.display = "none";
-    adminEmailSpan.innerText = "";
-    signOutBtn.style.display = "none";
-    if(unsubscribe) unsubscribe();
+    if(adminLoginSection) adminLoginSection.style.display = "block";
+    if(dashboardSection) dashboardSection.style.display = "none";
+    if(adminEmailSpan) adminEmailSpan.innerText = "";
+    if(signOutBtn) signOutBtn.style.display = "none";
+    if(unsubscribe){ try{ unsubscribe(); } catch(e){} }
     return;
   }
+
   if(!ADMIN_EMAILS.includes(user.email)){
-    showStatus("❌ You are signed in, but not an admin.","text-danger");
+    showStatus("❌ You are signed in but not an admin.", "text-danger");
     auth.signOut();
     return;
   }
-  adminEmailSpan.innerText = user.email;
-  adminLoginSection.style.display = "none";
-  dashboardSection.style.display = "block";
-  signOutBtn.style.display = "inline-block";
-  showStatus("✅ Signed in as admin.", "text-success");
-  initMap();
-  setTimeout(()=> map.invalidateSize(), 300);
 
-  if(unsubscribe) unsubscribe();
-  const q = db.collection("grievances").orderBy("createdAt", "desc");
-  unsubscribe = q.onSnapshot(snapshot=>{
+  if (adminEmailSpan) adminEmailSpan.innerText = user.email;
+  if (adminLoginSection) adminLoginSection.style.display = "none";
+  if (dashboardSection) dashboardSection.style.display = "block";
+  if (signOutBtn) signOutBtn.style.display = "inline-block";
+  showStatus("✅ Signed in as admin", "text-success");
+
+  initMap();
+
+  if(unsubscribe) { try{ unsubscribe(); } catch(e){} }
+  // keep server ordering, but client may re-sort after filtering — that's expected
+  unsubscribe = db.collection("grievances").orderBy("createdAt", "desc").onSnapshot(snap=>{
     grievances = [];
-    snapshot.forEach(doc => grievances.push({ id: doc.id, ...doc.data() }));
+    snap.forEach(doc => grievances.push({ id: doc.id, ...doc.data() }));
     currentPage = 1;
     renderStats();
-    runClientClustering(); // compute clusters + render clusters list
+    runClientClustering();
     renderGrievances();
   }, err=>{
-    console.error("Grievance snapshot error:", err);
-    showStatus("❌ Failed to load grievances. See console.", "text-danger");
-    summaryLoading.textContent = 'Failed to load data: ' + (err.message || err);
+    console.error("snapshot error", err);
+    showStatus("❌ Failed loading grievances", "text-danger");
   });
 });
 
-/* LOGIN / SIGNOUT */
-async function login() {
-  const email = document.getElementById("adminEmailInput").value.trim();
-  const password = document.getElementById("adminPasswordInput").value.trim();
-  if(!email || !password) return showStatus("⚠️ Enter email and password.", "text-warning");
-  try {
-    await auth.signInWithEmailAndPassword(email, password);
-  } catch(e) {
-    console.error(e);
-    showStatus("❌ " + e.message, "text-danger");
+/* debug login */
+async function login(){
+  const email = (document.getElementById("adminEmailInput") || {}).value?.trim() || "";
+  const password = (document.getElementById("adminPasswordInput") || {}).value?.trim() || "";
+  if(!email || !password){ showStatus("⚠️ Enter email & password","text-warning"); return; }
+  try{
+    const res = await auth.signInWithEmailAndPassword(email, password);
+    console.info("signIn result", res);
+    showStatus("✅ Signed in — waiting for auth state...", "text-success");
+  }catch(err){
+    console.error("login err", err);
+    const msg = err?.code ? `${err.code} — ${err.message}` : (err?.message || String(err));
+    showStatus("❌ Login failed: "+msg, "text-danger");
   }
 }
-function signOut() { auth.signOut(); }
+function signOut(){ auth.signOut(); }
 
-/* STATS */
-function renderStats() {
+/* stats */
+function renderStats(){
   const total = grievances.length;
   let highOpen=0, medOpen=0, resolved=0;
   grievances.forEach(g=>{
-    const status = g.status || "open";
-    const priority = (g.hfEngine?.priority || "low").toLowerCase();
-    if(status === "resolved") resolved++;
-    else {
-      if(priority === "high") highOpen++;
-      if(priority === "medium") medOpen++;
-    }
+    const status = (g.status || "open").toLowerCase();
+    const p = (g.hfEngine?.priority || "low").toLowerCase();
+    if(status === "resolved") resolved++; else { if(p==="high") highOpen++; if(p==="medium") medOpen++; }
   });
   document.getElementById("statTotal").innerText = total;
   document.getElementById("statHighOpen").innerText = highOpen;
@@ -162,20 +144,44 @@ function renderStats() {
   document.getElementById("statResolved").innerText = resolved;
 }
 
-/* FILTERS + RENDER LIST */
+/* filters + render list */
 function onFilterChange(){ currentPage = 1; renderGrievances(); }
-function onPageSizeChange(){ pageSize = Number(document.getElementById('pageSizeSelect').value) || 10; currentPage = 1; renderGrievances(); }
-
+function onPageSizeChange(){ pageSize = Number(document.getElementById("pageSizeSelect").value) || 10; currentPage = 1; renderGrievances(); }
 function priorityWeight(p){ if(p==="high") return 3; if(p==="medium") return 2; return 1; }
 
-function renderGrievances() {
+/* normalize various createdAt shapes into ms epoch */
+function asEpoch(x){
+  if(!x) return 0;
+  // Firestore Timestamp
+  if(typeof x.toDate === "function") {
+    try { return x.toDate().getTime(); } catch(e) {}
+  }
+  // Date object
+  if(x instanceof Date) return x.getTime();
+  // number: seconds or ms
+  if(typeof x === "number") {
+    return x > 1e12 ? x : x * 1000;
+  }
+  // string (ISO)
+  if(typeof x === "string") {
+    const t = Date.parse(x);
+    if(!Number.isNaN(t)) return t;
+  }
+  return 0;
+}
+
+function renderGrievances(){
   const listEl = document.getElementById("grievanceList");
-  if(!grievances.length){ listEl.innerHTML = '<div class="text-center text-muted py-5">No grievances yet.</div>'; document.getElementById("listMeta").innerText = "0 items"; updateMapMarkers([]); renderPaginationControls(0); return; }
+  if(!listEl) return;
+  if(!grievances.length){ listEl.innerHTML = `<div class="text-center text-muted py-5">No grievances yet</div>`; updateMapMarkers([]); return; }
 
   const priorityFilter = document.getElementById("priorityFilter").value;
   const categoryFilter = document.getElementById("categoryFilter").value;
   const statusFilter = document.getElementById("statusFilter").value;
-  const searchText = document.getElementById("searchInput").value.trim().toLowerCase();
+  const searchText = (document.getElementById("searchInput").value || "").trim().toLowerCase();
+  const rawSortVal = (document.getElementById("sortOrder") || {}).value || "newest";
+  const sortLower = String(rawSortVal).toLowerCase();
+  const wantOldest = sortLower.includes("old") || sortLower.includes("oldest");
 
   let filtered = grievances.filter(g=>{
     const hf = g.hfEngine || {};
@@ -185,287 +191,312 @@ function renderGrievances() {
     if(priorityFilter !== "all" && pr !== priorityFilter) return false;
     if(categoryFilter !== "all" && cat !== categoryFilter) return false;
     if(statusFilter !== "all" && st !== statusFilter) return false;
-    if(searchText){ const blob = `${g.title||''} ${g.description||''}`.toLowerCase(); if(!blob.includes(searchText)) return false; }
+    if(searchText){
+      const blob = `${g.title || ""} ${g.description || ""}`.toLowerCase();
+      if(!blob.includes(searchText)) return false;
+    }
     return true;
   });
 
-  // if cluster filter active, restrict to cluster members
+  // cluster filter:
   if(window._selectedClusterIds && window._selectedClusterIds.size){
     filtered = filtered.filter(g => window._selectedClusterIds.has(g.id));
   }
 
+  // SORT: date PRIMARY (newest/oldest), priority SECONDARY (high->low), then createdAt fallback to 0
   filtered.sort((a,b)=>{
+    const ta = asEpoch(a.createdAt);
+    const tb = asEpoch(b.createdAt);
+    if(ta !== tb){
+      // if user wants oldest first, smaller epoch should come first
+      return wantOldest ? ta - tb : tb - ta;
+    }
+    // tie-breaker: priority (high -> low)
     const pa = priorityWeight(a.hfEngine?.priority || "low");
     const pb = priorityWeight(b.hfEngine?.priority || "low");
     if(pa !== pb) return pb - pa;
-    const da = a.createdAt?.toDate?.() || new Date(0);
-    const db = b.createdAt?.toDate?.() || new Date(0);
-    return db - da;
+    // final tiebreaker: createdAt string compare (stable)
+    return String(b.id || "").localeCompare(String(a.id || ""));
   });
 
   const totalItems = filtered.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
   if(currentPage > totalPages) currentPage = totalPages;
-  const startIdx = (currentPage - 1) * pageSize;
-  const pageItems = filtered.slice(startIdx, startIdx + pageSize);
+  const start = (currentPage - 1) * pageSize;
+  const pageItems = filtered.slice(start, start + pageSize);
 
   document.getElementById("listMeta").innerText = `${totalItems} items • page ${currentPage} of ${totalPages}`;
 
   let html = "";
   pageItems.forEach(g=>{
     const hf = g.hfEngine || {};
-    const priority = (hf.priority || "low").toLowerCase();
-    const category = (hf.category || "other").toLowerCase();
-    const isUrgent = !!hf.isUrgent;
-    const status = (g.status || "open").toLowerCase();
-    const created = g.createdAt?.toDate?.() || new Date();
+    const priority = hf.priority || "low";
+    const category = hf.category || "other";
+    const urgent = !!hf.isUrgent;
+    const status = g.status || "open";
+    // try to format createdAt nicely: prefer createdAt.toDate if present
+    let createdDate = null;
+    try { createdDate = (g.createdAt && typeof g.createdAt.toDate === 'function') ? g.createdAt.toDate() : (g.createdAt instanceof Date ? g.createdAt : (typeof g.createdAt === 'number' ? new Date(asEpoch(g.createdAt)) : (typeof g.createdAt === 'string' ? new Date(asEpoch(g.createdAt)) : null))); } catch(e) { createdDate = null; }
+    const created = createdDate || new Date();
     const createdStr = created.toLocaleDateString() + " " + created.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
-    let badgeClass = "badge-priority-low";
-    if(priority === "high") badgeClass = "badge-priority-high";
-    else if(priority === "medium") badgeClass = "badge-priority-medium";
-    const urgentBadge = isUrgent ? `<span class="badge ms-1 badge-urgent">URGENT</span>` : "";
-    const statusClass = status === "resolved" ? "status-resolved" : "status-open";
-    const keywords = (hf.keywords || []).slice(0,5).join(", ");
-    const lat = (typeof g.latitude !== 'undefined' && g.latitude !== null) ? g.latitude : null;
-    const lon = (typeof g.longitude !== 'undefined' && g.longitude !== null) ? g.longitude : null;
-    const latlonHtml = (lat!==null && lon!==null) ? `<div class="mt-1 small text-muted"><span class="small-label">Lat / Lon:</span> ${Number(lat).toFixed(6)}, ${Number(lon).toFixed(6)}</div>` : "";
+    const badgeClass = priority==="high" ? "badge-priority-high" : (priority==="medium" ? "badge-priority-medium" : "badge-priority-low");
+
     html += `
       <div class="grievance-row" onclick="onRowClick('${g.id}')">
         <div class="d-flex justify-content-between align-items-start">
           <div>
             <div class="d-flex align-items-center mb-1">
               <strong>${escapeHtml(g.title || "Untitled")}</strong>
-              <span class="badge ms-2 ${badgeClass} text-uppercase">${priority || "low"}</span>
-              ${urgentBadge}
-              <span class="badge ms-2 bg-secondary text-uppercase">${escapeHtml(category)}</span>
+              <span class="badge ms-2 ${badgeClass}">${escapeHtml(priority)}</span>
+              ${urgent ? `<span class="badge ms-2 badge-urgent">URGENT</span>` : ""}
+              <span class="badge ms-2 bg-secondary">${escapeHtml(category)}</span>
             </div>
-            <!-- DESCRIPTION WITH SHOW MORE -->
-                <div class="mb-1 small text-muted">
-                <span id="desc-${g.id}" class="desc-short">
-                    ${escapeHtml((g.description || "").slice(0, 120))}
-                    ${(g.description || "").length > 120 ? "..." : ""}
-                </span>
-
-                ${(g.description || "").length > 120 ? `
-                    <span id="desc-full-${g.id}" class="desc-full d-none">
-                    ${escapeHtml(g.description)}
-                    </span>
-                    <button class="btn btn-link btn-sm p-0" 
-                            onclick="event.stopPropagation(); toggleDescription('${g.id}')">
-                    Show More
-                    </button>
-                ` : ""}
-                </div>
+            <div class="mb-1 small text-muted">
+              ${escapeHtml((g.description || "").slice(0,140))}
+              ${(g.description || "").length > 140 ? "..." : ""}
+            </div>
             <div class="small text-muted">
               <span class="me-3"><span class="small-label">Created:</span> ${escapeHtml(createdStr)}</span>
               <span class="me-3"><span class="small-label">User:</span> ${escapeHtml(g.userId || "-")}</span>
-              ${keywords ? `<span class="small-label">Keywords:</span> ${escapeHtml(keywords)}` : ""}
             </div>
-            ${latlonHtml}
           </div>
+
           <div class="text-end">
-            <div class="mb-2">
-              <span class="status-chip ${statusClass}">${status}</span>
-            </div>
-            ${status === "open" ? `<button class="btn btn-sm btn-outline-success mb-1" onclick="event.stopPropagation(); markResolved('${g.id}')">Mark Resolved</button>` : `<button class="btn btn-sm btn-outline-secondary" disabled>Resolved</button>`}
+            <button class="btn btn-sm btn-outline-light mb-2" onclick="event.stopPropagation(); onRowClick('${g.id}')">Open</button>
+            ${status === "open"
+              ? `<button id="resolve-btn-${g.id}" class="btn btn-sm btn-outline-success" onclick="event.stopPropagation(); markResolved('${g.id}', this)">Resolve</button>`
+              : `<button class="btn btn-sm btn-secondary" disabled>Resolved</button>`
+            }
           </div>
         </div>
       </div>
     `;
   });
 
-  listEl.innerHTML = html || '<div class="text-center text-muted py-5">No grievances match these filters.</div>';
+  listEl.innerHTML = html;
   renderPaginationControls(totalItems);
-  updateMapMarkers(filtered); // show markers for filtered set on map (entire filtered set)
+  updateMapMarkers(filtered);
 }
 
-/* Pagination controls */
+/* pagination */
 function renderPaginationControls(totalItems){
-  const el = document.getElementById('paginationButtons');
-  el.innerHTML = '';
+  const el = document.getElementById("paginationButtons");
+  if(!el) return;
+  el.innerHTML = "";
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
 
-  const prev = document.createElement('button'); prev.className='btn btn-sm btn-outline-light page-btn'; prev.innerText='Prev'; prev.disabled=currentPage<=1; prev.onclick=()=>{ if(currentPage>1){ currentPage--; renderGrievances(); } }; el.appendChild(prev);
+  const prev = document.createElement("button"); prev.className = "btn btn-sm btn-outline-light page-btn"; prev.innerText = "Prev"; prev.disabled = currentPage <= 1;
+  prev.onclick = ()=>{ if(currentPage>1){ currentPage--; renderGrievances(); } }; el.appendChild(prev);
 
-  const maxButtons = 7;
-  const createPageButton = n => {
-    const b = document.createElement('button');
-    b.className = `btn btn-sm ${n===currentPage ? 'btn-primary' : 'btn-outline-light'} page-btn`;
-    b.innerText = n; b.onclick = ()=>{ if(currentPage===n) return; currentPage=n; renderGrievances(); }; return b;
-  };
-
-  if(totalPages <= maxButtons) { for(let i=1;i<=totalPages;i++) el.appendChild(createPageButton(i)); }
-  else {
-    const pages = new Set([1,totalPages,currentPage,currentPage-1,currentPage+1,2,totalPages-1]);
-    const sorted = Array.from(pages).filter(n=>n>=1 && n<=totalPages).sort((a,b)=>a-b);
-    let last = 0; sorted.forEach(n=>{ if(last && n-last>1){ const ell=document.createElement('span'); ell.className='mx-1 text-muted'; ell.innerText='…'; el.appendChild(ell); } el.appendChild(createPageButton(n)); last=n; });
+  const maxButtons = Math.min(7, totalPages);
+  let start = Math.max(1, currentPage - 3);
+  let end = Math.min(totalPages, start + maxButtons - 1);
+  for(let i=start;i<=end;i++){
+    const b = document.createElement("button");
+    b.className = `btn btn-sm ${i===currentPage ? "btn-primary" : "btn-outline-light"} page-btn`;
+    b.innerText = i;
+    b.onclick = ()=>{ currentPage = i; renderGrievances(); };
+    el.appendChild(b);
   }
 
-  const next = document.createElement('button'); next.className='btn btn-sm btn-outline-light page-btn'; next.innerText='Next'; next.disabled=currentPage>=totalPages; next.onclick=()=>{ if(currentPage<totalPages){ currentPage++; renderGrievances(); } }; el.appendChild(next);
+  const next = document.createElement("button"); next.className = "btn btn-sm btn-outline-light page-btn"; next.innerText = "Next"; next.disabled = currentPage >= totalPages;
+  next.onclick = ()=>{ if(currentPage<totalPages){ currentPage++; renderGrievances(); } }; el.appendChild(next);
 
-  setTimeout(()=>{ try{ map.invalidateSize(); } catch(e){} }, 150);
+  setTimeout(()=>{ try{ map?.invalidateSize(); }catch(e){} }, 150);
 }
 
 /* mark resolved */
-async function markResolved(id){
-  try{ await db.collection("grievances").doc(id).update({ status:"resolved" }); showStatus("✅ Marked as resolved.", "text-success"); } catch(e){ console.error(e); showStatus("❌ Failed to update status.", "text-danger"); }
+async function markResolved(id, btnEl){
+  try{
+    if(btnEl){ btnEl.disabled = true; btnEl.innerText = "Resolving..."; }
+    await db.collection("grievances").doc(id).update({ status: "resolved" });
+    const idx = grievances.findIndex(x => x.id === id);
+    if(idx !== -1) grievances[idx].status = "resolved";
+    renderStats();
+    renderGrievances();
+    runClientClustering();
+    showStatus("✅ Marked resolved", "text-success");
+  }catch(e){
+    console.error("markResolved error", e);
+    if(btnEl){ btnEl.disabled = false; btnEl.innerText = "Resolve"; }
+    showStatus("❌ Failed to update status", "text-danger");
+  }
 }
 
-/* update markers */
+/* map markers */
 function updateMapMarkers(list){
-  if(!map) return;
+  if(!map || !markersLayer) return;
   markersLayer.clearLayers();
   for(const k in markersById) delete markersById[k];
   const pts = [];
   list.forEach(g=>{
-    const lat = (typeof g.latitude !== 'undefined' && g.latitude !== null) ? Number(g.latitude) : null;
-    const lon = (typeof g.longitude !== 'undefined' && g.longitude !== null) ? Number(g.longitude) : null;
-    if(lat === null || lon === null || isNaN(lat) || isNaN(lon)) return;
-    const hf = g.hfEngine || {};
-    const popupHtml = `<div><strong>${escapeHtml(g.title || 'Untitled')}</strong><br/><small class="text-muted">${escapeHtml(g.userId || '-')}</small><div style="margin-top:6px"><span class="small-label">Category:</span> ${escapeHtml(hf.category||'other')}<br/><span class="small-label">Priority:</span> ${escapeHtml(hf.priority||'low')}<br/><span class="small-label">Created:</span> ${escapeHtml((g.createdAt?.toDate?.()||'').toString())}</div></div>`;
-    const marker = L.marker([lat, lon]).addTo(markersLayer).bindPopup(popupHtml);
+    const lat = Number(g.latitude);
+    const lon = Number(g.longitude);
+    if(Number.isNaN(lat) || Number.isNaN(lon)) return;
+    const marker = L.marker([lat, lon]).addTo(markersLayer);
     markersById[g.id] = marker;
+    marker.bindPopup(`<strong>${escapeHtml(g.title || "Untitled")}</strong><br/>${escapeHtml(g.userId || "-")}`);
     pts.push([lat, lon]);
   });
-
-  if(pts.length){
-    try{ map.fitBounds(L.latLngBounds(pts), { padding: [40,40] }); } catch(e) {}
-  } else {
-    map.setView([20.5937,78.9629],5);
-  }
-
-  setTimeout(()=>{ try{ map.invalidateSize(); } catch(e){} }, 150);
+  if(pts.length) try{ map.fitBounds(pts, { padding: [40,40] }); }catch(e){}
 }
 
 /* focus marker */
-function focusOnMarker(docId){
-  const marker = markersById[docId];
-  if(marker){ try{ map.setView(marker.getLatLng(),15); marker.openPopup(); } catch(e){} }
-  else showStatus("ℹ️ No location available for this grievance.", "text-info");
-}
+function focusOnMarker(id){ const m = markersById[id]; if(m){ try{ map.setView(m.getLatLng(),15); m.openPopup(); }catch(e){} } else showStatus("ℹ️ No location for this grievance","text-info"); }
 
 /* detail modal */
-function onRowClick(docId){
-  const g = grievances.find(x => x.id === docId);
-  if(!g){ showStatus("ℹ️ Could not find grievance details.","text-info"); return; }
+function onRowClick(id){
+  const g = grievances.find(x => x.id === id);
+  if(!g) return;
   showDetailModal(g);
-  if(g.latitude !== undefined && g.latitude !== null && g.longitude !== undefined && g.longitude !== null) focusOnMarker(docId);
+  if(g.latitude != null && g.longitude != null) focusOnMarker(id);
 }
 
 function showDetailModal(g){
-  const m = document.getElementById('grievance-detail-modal');
+  const m = document.getElementById("grievance-detail-modal");
   if(!m) return;
-  document.getElementById('gd-title').innerText = g.title || 'Untitled';
-  const hf = g.hfEngine || {};
-  const priority = (hf.priority || 'low').toUpperCase();
-  const priorityColor = priority === 'HIGH' ? '#ff5252' : (priority === 'MEDIUM' ? '#ffb300' : '#66bb6a');
-  const priorityBadge = `<span style="background:${priorityColor};color:#fff;padding:4px 8px;border-radius:999px;margin-right:6px;font-size:0.75rem">${priority}</span>`;
-  const urgentBadge = hf.isUrgent ? `<span style="background:#ff1744;color:#fff;padding:4px 8px;border-radius:999px;margin-right:6px;font-size:0.75rem">URGENT</span>` : '';
-  const catBadge = `<span style="background:#6c757d;color:#fff;padding:4px 8px;border-radius:999px;font-size:0.75rem">${(hf.category||'').toUpperCase()}</span>`;
-  document.getElementById('gd-badges').innerHTML = priorityBadge + urgentBadge + catBadge;
-  document.getElementById('gd-desc').innerText = g.description || '';
-  const created = (g.createdAt && typeof g.createdAt.toDate === 'function') ? g.createdAt.toDate().toLocaleString() : (g.createdAt || '');
-  const keywords = (hf.keywords && hf.keywords.length) ? hf.keywords.join(', ') : '-';
-  document.getElementById('gd-meta').innerHTML =
-    `<div><strong style="color:#bdbdbd">Created:</strong> ${created}</div>
-     <div><strong style="color:#bdbdbd">User:</strong> ${g.userId || '-'}</div>
-     <div><strong style="color:#bdbdbd">Keywords:</strong> ${escapeHtml(keywords)}</div>`;
-  const lat = (g.latitude !== undefined && g.latitude !== null) ? Number(g.latitude) : null;
-  const lon = (g.longitude !== undefined && g.longitude !== null) ? Number(g.longitude) : null;
-  document.getElementById('gd-latlon').innerHTML = lat!==null && lon!==null
-    ? `<strong style="color:#bdbdbd">Lat/Lon:</strong> ${lat.toFixed(6)}, ${lon.toFixed(6)}`
-    : `<strong style="color:#bdbdbd">Lat/Lon:</strong> Not provided`;
-  const mapBtn = document.getElementById('gd-map-btn');
-  if(lat!==null && lon!==null){ mapBtn.style.display='inline-block'; mapBtn.onclick = function(e){ e.stopPropagation(); focusOnMarker(g.id); }; } else { mapBtn.style.display='none'; mapBtn.onclick=null; }
-  const resolveBtn = document.getElementById('gd-resolve-btn');
-  resolveBtn.onclick = async function(e){ e.stopPropagation(); await markResolved(g.id); hideDetailModal(); };
-  m.style.display = 'block';
-}
-function hideDetailModal(){ const m=document.getElementById('grievance-detail-modal'); if(m) m.style.display='none'; }
-document.getElementById('gd-close').addEventListener('click', function(e){ e.stopPropagation(); hideDetailModal(); });
-document.addEventListener('click', function(e){ const m=document.getElementById('grievance-detail-modal'); if(!m || m.style.display === 'none') return; if(!m.contains(e.target)) hideDetailModal(); });
+  m.style.display = "block";
+  m.classList.add("center");
 
-/* CLUSTERING UI: run TF-IDF, render clusters, apply cluster filters */
+  const hf = g.hfEngine || {};
+  const priority = (hf.priority || "low").toUpperCase();
+  const cat = (hf.category || "other").toUpperCase();
+
+  document.getElementById("gd-title").innerText = g.title || "Untitled";
+  document.getElementById("gd-desc").innerText = g.description || "";
+
+  const priorityColor = priority === "HIGH" ? "#ff5252" : (priority === "MEDIUM" ? "#ffb300" : "#66bb6a");
+  document.getElementById("gd-badges").innerHTML = `
+    <span style="background:${priorityColor};padding:4px 8px;border-radius:999px;color:white">${priority}</span>
+    ${hf.isUrgent ? `<span style="background:#ff1744;padding:4px 8px;border-radius:999px;color:white;margin-left:6px">URGENT</span>` : ""}
+    <span style="background:#6c757d;padding:4px 8px;border-radius:999px;color:white;margin-left:6px">${cat}</span>
+  `;
+
+  const created = g.createdAt?.toDate?.() || new Date();
+  document.getElementById("gd-meta").innerHTML = `
+    <div><strong>Created:</strong> ${created.toLocaleString()}</div>
+    <div><strong>User:</strong> ${escapeHtml(g.userId || "-")}</div>
+    <div><strong>Keywords:</strong> ${(hf.keywords || []).slice(0,6).join(", ")}</div>
+  `;
+
+  document.getElementById("gd-latlon").innerHTML = (g.latitude != null && g.longitude != null)
+    ? `<strong>Lat/Lon:</strong> ${Number(g.latitude).toFixed(6)}, ${Number(g.longitude).toFixed(6)}`
+    : `<strong>Lat/Lon:</strong> Not provided`;
+
+  const mapBtn = document.getElementById("gd-map-btn"); if(mapBtn) mapBtn.onclick = ()=> focusOnMarker(g.id);
+  const resolveBtn = document.getElementById("gd-resolve-btn"); if(resolveBtn) resolveBtn.onclick = async (e)=>{ e.stopPropagation(); await markResolved(g.id); hideDetailModal(); };
+}
+
+function hideDetailModal(){ const m = document.getElementById("grievance-detail-modal"); if(!m) return; m.style.display = "none"; m.classList.remove("center"); }
+
+/* robust close wiring */
+(function wireModalClose(){
+  const old = document.getElementById("gd-close");
+  if(old && old.parentNode){ const clone = old.cloneNode(true); old.parentNode.replaceChild(clone, old); }
+  const btn = document.getElementById("gd-close");
+  if(btn) btn.addEventListener("click", e=>{ e.preventDefault(); e.stopPropagation(); hideDetailModal(); });
+  document.addEventListener("click", e=>{
+    const modal = document.getElementById("grievance-detail-modal");
+    if(!modal || modal.style.display !== "block") return;
+    if(!modal.contains(e.target)) hideDetailModal();
+  });
+  document.addEventListener("keydown", e=>{
+    if(e.key === "Escape"){ const modal = document.getElementById("grievance-detail-modal"); if(modal && modal.style.display === "block") hideDetailModal(); }
+  });
+})();
+
+/* TF-IDF clustering (only) */
+/* run client clustering: TF-IDF only */
 function runClientClustering(){
-  try{
-    if(!grievances.length){ clusters = []; clustersList.innerHTML = ''; summaryLoading.textContent = 'No grievances'; return; }
-    const corpus = grievances.map(g=>`${g.title||''} ${g.description||''}`.trim());
-    // build using TFIDF lib
-    const tf = window.TFIDF ? null : null; // placeholder (we call TFIDF_run below)
-    // run clustering
-    const result = (typeof TFIDF !== 'undefined' && TFIDF.run) ? TFIDF.run(grievances) : [];
-    clusters = result;
-    renderClustersUI();
-  } catch(e){
-    console.error('clustering failed', e);
-    summaryLoading.textContent = 'Clustering failed';
+  tfidfClusters = [];
+  if(window.TFIDF && TFIDF.run){
+    try{
+      tfidfClusters = TFIDF.run(grievances || []);
+      renderTfidfClustersUI();
+    }catch(e){
+      console.warn("tfidf failed", e);
+      tfidfClusters = [];
+      const tfDiv = document.getElementById("tfidfClusters");
+      if(tfDiv) tfDiv.innerHTML = "<div class='text-muted'>TFIDF clustering failed</div>";
+    }
+  } else {
+    const tfDiv = document.getElementById("tfidfClusters");
+    if(tfDiv) tfDiv.innerHTML = "<div class='text-muted'>TFIDF not available</div>";
   }
 }
 
-function renderClustersUI(){
-  clustersList.innerHTML = '';
-  if(!clusters.length){ clustersList.innerHTML = '<div class="text-muted">No clusters found.</div>'; return; }
-  clusters.forEach(cluster => {
-    const row = document.createElement('div'); row.className = 'summary-cluster';
-    row.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div>
-          <div style="font-weight:700">${cluster.size} — ${escapeHtml(cluster.area)}</div>
-          <div class="small text-muted">${escapeHtml(cluster.keywords.join(', '))}</div>
-          <div class="small text-muted mt-1">${escapeHtml(cluster.sample.slice(0,110))}${cluster.sample.length>110?'…':''}</div>
+/* render TF-IDF clusters in the same style as your screenshot */
+function renderTfidfClustersUI(){
+  if(!clustersList) return;
+  // create top header
+  clustersList.innerHTML = `<div style="font-weight:700;margin-bottom:8px;">TF-IDF clusters</div>`;
+  const tfDiv = document.createElement("div"); tfDiv.id = "tfidfClusters"; tfDiv.style.marginTop = "8px";
+  clustersList.appendChild(tfDiv);
+
+  if(!tfidfClusters || !tfidfClusters.length){
+    tfDiv.innerHTML = "<div class='text-muted'>No TF-IDF clusters</div>";
+    return;
+  }
+
+  // render clusters as cards like screenshot
+  tfDiv.innerHTML = "";
+  tfidfClusters.forEach(c=>{
+    // area in TFIDF output may be absent; show 'Unknown' to match screenshot
+    const title = c.area || "Unknown";
+    const keywords = Array.isArray(c.keywords) ? c.keywords.slice(0,6).join(", ") : "";
+    const sample = (c.sample || "").slice(0,120);
+    const size = c.size || (Array.isArray(c.ids) ? c.ids.length : 1);
+    // single cluster block
+    const block = document.createElement("div");
+    block.className = "summary-cluster";
+    block.style.display = "flex";
+    block.style.justifyContent = "space-between";
+    block.style.alignItems = "center";
+    block.style.padding = "10px";
+    block.style.marginBottom = "8px";
+    block.innerHTML = `
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(title)}</div>
+        <div class="small text-muted" style="margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(keywords)}</div>
+        <div class="small text-muted mt-1" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sample)}</div>
+      </div>
+      <div style="flex:0 0 auto;margin-left:8px;text-align:right">
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+          <div class="badge bg-light text-dark" style="font-size:0.9rem;padding:6px 8px;border-radius:10px">${size}</div>
+          <button class="btn btn-sm btn-outline-light btn-tview" data-id="${escapeHtml(c.clusterId || "")}" style="padding:6px 10px">View</button>
         </div>
-        <div style="text-align:right">
-          <div class="badge bg-light text-dark">${cluster.size}</div>
-          <div style="margin-top:6px"><button class="btn btn-sm btn-outline-light btn-view" data-id="${cluster.clusterId}">View</button></div>
-        </div>
-      </div>`;
-    clustersList.appendChild(row);
+      </div>
+    `;
+    tfDiv.appendChild(block);
   });
-  document.querySelectorAll('.btn-view').forEach(b=>b.addEventListener('click', e=>{
-    const id = e.currentTarget.dataset.id; applyClusterFilter(id);
-  }));
+
+  // wire view buttons
+  document.querySelectorAll(".btn-tview").forEach(b=>b.addEventListener("click", e=>{ const id = e.currentTarget.dataset.id; applyClusterFilter(id); }));
 }
 
-/* apply cluster filter */
+/* apply TFIDF cluster filter */
 function applyClusterFilter(clusterId){
   if(!clusterId) { window._selectedClusterIds = null; renderGrievances(); return; }
-  const cluster = clusters.find(c=>c.clusterId===clusterId);
-  if(!cluster) return;
-  const ids = new Set(cluster.ids.map(i => grievances[i].id));
+  const c = tfidfClusters.find(x => String(x.clusterId) === String(clusterId));
+  if(!c) return;
+  const ids = new Set((c.ids || []).slice(0).map(i => {
+    // TFIDF might store direct doc ids or indices — handle both
+    const maybeId = typeof i === "string" ? i : (grievances[i]?.id || null);
+    return maybeId;
+  }).filter(Boolean));
   window._selectedClusterIds = ids;
-  // after applying, re-render list + center map
-  renderGrievances();
-  const pts = grievances.filter(g=>ids.has(g.id)).map(g => (g.latitude!==undefined && g.latitude!==null && g.longitude!==undefined && g.longitude!==null) ? [Number(g.latitude), Number(g.longitude)] : null).filter(Boolean);
-  if(pts.length) try{ map.fitBounds(L.latLngBounds(pts), {padding:[40,40]}); } catch(e){}
-}
-
-/* summary panel controls */
-summaryBtn.addEventListener('click', ()=>{ summaryPanel.classList.toggle('open'); dashboardWrap.classList.toggle('shifted'); if(summaryPanel.classList.contains('open')) runClientClustering(); });
-collapseSummary.addEventListener('click', ()=>{ summaryPanel.classList.toggle('open'); dashboardWrap.classList.toggle('shifted'); });
-clearCluster.addEventListener('click', ()=>{ window._selectedClusterIds = null; renderGrievances(); document.querySelectorAll('.summary-cluster').forEach(r=>r.style.outline='none'); });
-
-/* scheduler for clustering to avoid heavy work on repeated updates */
-let clusterTimer = null;
-function scheduleClusterAndRender(){
-  summaryLoading.textContent = 'Computing clusters…';
-  if(clusterTimer) clearTimeout(clusterTimer);
-  clusterTimer = setTimeout(()=>{ runClientClustering(); clusterTimer = null; }, 200);
-  renderStats();
   renderGrievances();
 }
 
-/* run clustering on load */
-function runClientClusteringWrapper(){ scheduleClusterAndRender(); }
+/* expose admin API safely */
+window._admin = window._admin || {};
+window._admin.login = login;
+window._admin.signOut = signOut;
+window._admin.openDetail = onRowClick;
+window._admin.applyClusterFilter = applyClusterFilter;
 
-/* initial call made after snapshot */
-function scheduleInitial(){ setTimeout(()=>{ if(grievances.length) scheduleClusterAndRender(); else summaryLoading.textContent='Waiting for grievances'; }, 350); }
+/* summary toggle */
+if(summaryBtn) summaryBtn.onclick = ()=>{ if(!summaryPanel || !dashboardWrap) return; summaryPanel.classList.toggle("open"); dashboardWrap.classList.toggle("shifted"); runClientClustering(); };
 
-/* Expose helpers for outside debugging */
-window._admin_helpers = { runClientClustering, applyClusterFilter, renderGrievances };
-
-/* wire global _admin API */
-window._admin = {
-  login, signOut, toggleSummary: ()=>{ summaryPanel.classList.toggle('open'); dashboardWrap.classList.toggle('shifted'); runClientClustering(); }, openDetail: onRowClick
-};
-
-/* Start initial */
-scheduleInitial();
+/* initial run if data present */
+setTimeout(()=>{ if(grievances && grievances.length) runClientClustering(); }, 350);
