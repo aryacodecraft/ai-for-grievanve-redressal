@@ -1,0 +1,156 @@
+.header {
+  background-color: var(--bg-primary);
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header-top {
+  background-color: var(--primary-color);
+  color: white;
+  padding: 0.75rem 0;
+}
+
+.header-top-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2rem;
+}
+
+.gov-emblem {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.emblem-placeholder {
+  flex-shrink: 0;
+  color: var(--accent-color);
+}
+
+.gov-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.gov-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  opacity: 0.95;
+}
+
+.dept-name {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.header-links {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.header-links a {
+  color: white;
+  transition: opacity 0.2s;
+}
+
+.header-links a:hover {
+  opacity: 0.8;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip-link:focus {
+  position: relative;
+  left: 0;
+}
+
+.header-divider {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.nav-bar {
+  background-color: var(--secondary-color);
+  border-top: 3px solid var(--accent-color);
+}
+
+.nav-menu {
+  display: flex;
+  list-style: none;
+  gap: 0;
+  align-items: center;
+}
+
+.nav-menu li {
+  position: relative;
+}
+
+.nav-menu li a {
+  display: block;
+  padding: 1rem 1.5rem;
+  color: white;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.nav-menu li a:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+  color: white;
+}
+
+.nav-login {
+  margin-left: auto;
+}
+
+.btn-nav-login,
+.btn-nav-admin {
+  background-color: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  padding: 0.5rem 1.25rem;
+  border-radius: 2px;
+  font-weight: 500;
+}
+
+.btn-nav-login:hover,
+.btn-nav-admin:hover {
+  background-color: rgba(255, 255, 255, 0.25);
+}
+
+@media (max-width: 768px) {
+  .header-top-content {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .gov-emblem {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .header-links {
+    font-size: 0.75rem;
+  }
+
+  .nav-menu {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem 0;
+  }
+
+  .nav-menu li a {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+  }
+
+  .nav-login {
+    margin-left: 0;
+  }
+}
