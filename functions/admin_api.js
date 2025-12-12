@@ -28,28 +28,140 @@ const db = firebase.firestore();
 export const ADMIN_EMAILS = ["aryaadmin@gmail.com"];
 
 /**
- * Subscribe to grievances collection (ordered by createdAt desc).
- * callback receives (itemsArray)
- * returns unsubscribe function
+ * Helper: return a best-effort image URL from a document's data object.
+ * Checks common field names and looks for any string that looks like an http(s) url.
  */
-export function subscribeGrievancesRealtime(onChange, onError) {
-  const q = db.collection("grievances").orderBy("createdAt", "desc");
-  const unsub = q.onSnapshot(snapshot => {
-    const items = [];
-    snapshot.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-    onChange(items);
-  }, err => {
-    if (typeof onError === "function") onError(err);
-  });
-  return unsub;
+export function getImageUrlFromDoc(data) {
+  if (!data || typeof data !== 'object') return null;
+  const candidates = [
+    'imageUrl', 'imageURL', 'image', 'photo', 'img', 'image_url', 'image_uri', 'fileUrl', 'attachment', 'photoUrl', 'photo_url'
+  ];
+  for (const k of candidates) {
+    if (data[k] && typeof data[k] === 'string' && (data[k].startsWith('http://') || data[k].startsWith('https://'))) {
+      return data[k];
+    }
+  }
+  // fallback: find any string field that looks like a url (cloudinary, s3, firebase storage, etc)
+  for (const [k, v] of Object.entries(data)) {
+    if (typeof v === 'string' && /^(https?:\/\/)/i.test(v) &&
+        /(res\.cloudinary\.com|cloudfront\.net|s3\.amazonaws\.com|firebasestorage\.googleapis\.com|firebaseapp\.com)/i.test(v)) {
+      return v;
+    }
+  }
+  return null;
 }
 
-/** One-time fetch of grievances (array) */
+/**
+ * Subscribe to grievances collection (ordered by createdAt desc).
+ * onChange receives (itemsArray)
+ * returns unsubscribe function
+ *
+ * NOTE: If the ordered realtime query returns empty (likely because many docs
+ * are missing createdAt) or Firestore returns an index/permission error,
+ * we fallback to a non-ordered listener / one-time fetch so older docs show up.
+ */
+export function subscribeGrievancesRealtime(onChange, onError) {
+  // preferred ordered realtime query
+  const orderedQuery = db.collection("grievances").orderBy("createdAt", "desc");
+
+  let unsub = null;
+
+  try {
+    unsub = orderedQuery.onSnapshot(snapshot => {
+      // if snapshot has docs -> render them
+      if (snapshot && !snapshot.empty) {
+        const items = [];
+        snapshot.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+        onChange(items);
+        return;
+      }
+
+      // empty snapshot: likely because many docs lack createdAt.
+      // fallback to non-ordered realtime listener (or one-time get if realtime unsupported)
+      console.warn('[admin.api] ordered snapshot empty — falling back to non-ordered listener');
+      // unsubscribe the ordered listener and replace
+      try { if (unsub) { unsub(); } } catch (_) {}
+      const fallbackQuery = db.collection("grievances"); // no orderBy
+      // best-effort: realtime fallback
+      const fallbackUnsub = fallbackQuery.onSnapshot(fbSnap => {
+        const arr = [];
+        fbSnap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+        // sort client-side: prefer createdAt desc when present
+        arr.sort((a, b) => {
+          const at = (a.createdAt && typeof a.createdAt.toDate === 'function') ? a.createdAt.toDate().getTime() : 0;
+          const bt = (b.createdAt && typeof b.createdAt.toDate === 'function') ? b.createdAt.toDate().getTime() : 0;
+          return bt - at;
+        });
+        onChange(arr);
+      }, fbErr => {
+        console.error('[admin.api] fallback realtime error', fbErr);
+        if (typeof onError === 'function') onError(fbErr);
+      });
+      // return fallback unsubscribe to caller
+      unsub = fallbackUnsub;
+    }, err => {
+      // Handle ordered query errors (index / permission). Try a one-time fetch fallback.
+      console.error('[admin.api] ordered realtime error', err);
+      if (typeof onError === 'function') onError(err);
+
+      // attempt one-time non-ordered get as fallback
+      db.collection('grievances').get()
+        .then(snap => {
+          const arr = [];
+          snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+          arr.sort((a, b) => {
+            const at = (a.createdAt && typeof a.createdAt.toDate === 'function') ? a.createdAt.toDate().getTime() : 0;
+            const bt = (b.createdAt && typeof b.createdAt.toDate === 'function') ? b.createdAt.toDate().getTime() : 0;
+            return bt - at;
+          });
+          onChange(arr);
+        })
+        .catch(getErr => {
+          console.error('[admin.api] fallback get failed', getErr);
+          if (typeof onError === 'function') onError(getErr);
+        });
+    });
+  } catch (e) {
+    console.error('[admin.api] subscribeGrievancesRealtime unexpected error', e);
+    if (typeof onError === 'function') onError(e);
+  }
+
+  // return unsubscribe function wrapper
+  return () => {
+    try { if (typeof unsub === 'function') unsub(); }
+    catch (e) { console.warn('[admin.api] unsubscribe error', e); }
+  };
+}
+
+/** One-time fetch of grievances (array)
+ *  Attempts ordered fetch first; if empty or fails, falls back to non-ordered fetch and sorts client-side.
+ */
 export async function fetchGrievancesOnce() {
-  const snap = await db.collection("grievances").orderBy("createdAt", "desc").get();
-  const arr = [];
-  snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
-  return arr;
+  try {
+    const snap = await db.collection("grievances").orderBy("createdAt", "desc").get();
+    // if ordered returned docs -> use them
+    if (snap && !snap.empty) {
+      const arr = [];
+      snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+      return arr;
+    }
+    // ordered empty -> fallback
+    console.warn('[admin.api] ordered fetch empty — falling back to un-ordered fetch');
+  } catch (err) {
+    // ordered fetch may fail due to index requirements or permission quirk; fallback below
+    console.warn('[admin.api] ordered fetch error — falling back to un-ordered fetch', err);
+  }
+
+  // fallback: get all docs without order and sort client-side
+  const snap2 = await db.collection('grievances').get();
+  const arr2 = [];
+  snap2.forEach(d => arr2.push({ id: d.id, ...d.data() }));
+  arr2.sort((a, b) => {
+    const at = (a.createdAt && typeof a.createdAt.toDate === 'function') ? a.createdAt.toDate().getTime() : 0;
+    const bt = (b.createdAt && typeof b.createdAt.toDate === 'function') ? b.createdAt.toDate().getTime() : 0;
+    return bt - at;
+  });
+  return arr2;
 }
 
 /** Mark a grievance resolved by id */

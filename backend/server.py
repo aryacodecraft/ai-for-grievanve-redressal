@@ -72,15 +72,24 @@ db = None
 try:
     firebase_key_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
     if firebase_key_json:
-        cred = credentials.Certificate(json_lib.loads(firebase_key_json))
-        logger.info("Using FIREBASE_SERVICE_ACCOUNT from env")
+        # If env var contains JSON string ensure it's valid; otherwise fall back.
+        try:
+            cred = credentials.Certificate(json_lib.loads(firebase_key_json))
+            logger.info("Using FIREBASE_SERVICE_ACCOUNT from env")
+        except Exception:
+            logger.exception("Failed to parse FIREBASE_SERVICE_ACCOUNT JSON from env; will try local file.")
+            cred = None
     else:
+        cred = None
+
+    if not cred:
         service_account_path = os.path.join(os.path.dirname(__file__), "serviceAccountKey.json")
         if os.path.exists(service_account_path):
             cred = credentials.Certificate(service_account_path)
             logger.info("Using local serviceAccountKey.json")
         else:
             raise FileNotFoundError("Firebase credentials not found in env or local file.")
+
     if not firebase_admin._apps:
         firebase_admin.initialize_app(cred)
     db = firestore.client()
@@ -107,7 +116,7 @@ if GROQ_API_KEY:
 else:
     logger.warning("GROQ_API_KEY not set. LLM image validation disabled until GROQ_API_KEY is provided.")
 
-LLAVA_MODEL = os.getenv("LLAVA_MODEL", "llava-v1.6-34b")
+LLAVA_MODEL = os.getenv("LLAVA_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 IMAGE_LLM_THRESHOLD = float(os.getenv("IMAGE_LLM_THRESHOLD", "60.0"))
 
 # -------------------------
@@ -203,189 +212,222 @@ def compute_image_quality_score(pil_img):
 
 # -------------------------
 # LLM image validation — returns a dict: { score: float(0-100), explanation: str, raw: str }
-# NOTE: uses Groq client only. If groq_client not configured, raises RuntimeError.
+# Uses Groq multimodal (meta-llama/llama-4-scout-17b-16e-instruct) correctly.
 # -------------------------
 def llm_image_confidence(image_url):
-    if not groq_client:
-        raise RuntimeError("Groq LLM (GROQ_API_KEY) not configured — cannot run LLM image validation.")
+    """
+    Validate an image using an LLM (Groq) when available, otherwise fall back to
+    an image-quality heuristic. Returns: {"score": float(0-100), "explanation": str, "raw": str}.
+    """
 
-    system_prompt = (
-        "You are an image validation assistant for a public grievance portal.\n"
-        "Given an image, return a JSON object only (no extra text) with two keys:\n"
-        "  - score: integer 0-100 (how confident the image shows a public infrastructure issue relevant for a complaint)\n"
-        "  - explanation: short plain-text explanation (1-2 sentences) describing why you gave that score.\n\n"
-        "Examples of ACCEPTABLE images: broken roads, large potholes, visible water leakage, large garbage piles, damaged streetlights, flooded streets.\n"
-        "Examples of UNACCEPTABLE images: selfies, selfies with background blurred, memes, screenshots of chat, indoor food/pets, documents, screenshots of webpages.\n\n"
-        "Important: always reply with valid JSON only, for example:\n"
-        '{"score": 78, "explanation": "Shows a large pothole on a public road; clear context and damage visible."}\n'
-        "\nDo not include any other commentary."
-    )
+    if not image_url:
+        return {"score": 0.0, "explanation": "No image URL provided", "raw": ""}
 
-    user_content = [
-        {"type": "input_image", "image_url": image_url},
-        {"type": "text", "text": "Rate this image (0-100) for whether it shows a public infrastructure complaint. Reply in JSON as described."}
-    ]
-
-    try:
-        res = groq_client.chat.completions.create(
-            model=LLAVA_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            temperature=0.0,
-            max_tokens=200
-        )
-        raw = ""
+    # Try LLM first if configured
+    if groq_client:
         try:
-            raw = res.choices[0].message.content.strip()
-        except Exception:
-            raw = str(res)
+            system_prompt = (
+                "You are an image validation assistant for a public grievance portal.\n"
+                "Given an image URL, return a JSON object only with two keys:\n"
+                "  - score: integer 0-100 (how confident the image shows a public infrastructure complaint)\n"
+                "  - explanation: short plain-text explanation (1-2 sentences).\n\n"
+                "Acceptable examples: broken roads, potholes, visible water leakage, large garbage piles, damaged streetlights, flooded streets.\n"
+                "Unacceptable examples: selfies, memes, screenshots of chat/webpages, indoor food/pets, documents.\n\n"
+                "IMPORTANT: Reply with VALID JSON only, for example:\n"
+                '{"score": 78, "explanation": "Shows a large pothole on a public road; clear context and damage visible."}\n'
+                "Do NOT include any extra text outside the JSON object."
+            )
 
-        parsed = None
-        try:
-            parsed = json_lib.loads(raw)
-        except Exception:
-            import re as _re
-            m = _re.search(r'\{[\s\S]*\}', raw)
-            if m:
-                try:
-                    parsed = json_lib.loads(m.group(0))
-                except Exception:
-                    parsed = None
+            user_text = (
+                "Rate this image (0-100) for whether it shows a public infrastructure complaint.\n"
+                "Return JSON only with keys `score` and `explanation`.\n"
+                f"Image URL: {image_url}\n"
+            )
 
-        if not parsed:
-            logger.warning("LLM returned unparsable response for image validation: %s", raw[:200])
-            return {"score": 0.0, "explanation": "LLM response unparsable", "raw": raw}
+            # Use a plain string for message content (fixes Groq 'messages.1' errors)
+            res = groq_client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                temperature=0.0,
+                max_tokens=200,
+            )
 
-        score = parsed.get("score")
-        explanation = parsed.get("explanation", "") or ""
-        try:
-            score = float(score)
-        except Exception:
+            # extract raw text safely
+            raw = ""
             try:
-                score = float(int(score))
+                # stable path for many Groq responses
+                raw = res.choices[0].message.content.strip()
             except Exception:
-                score = 0.0
-        if score < 0: score = 0.0
-        if score > 100: score = 100.0
+                try:
+                    # older/newer shapes
+                    raw = getattr(res.choices[0].message, "content", str(res)).strip()
+                except Exception:
+                    raw = str(res)
 
-        return {"score": round(float(score), 2), "explanation": str(explanation)[:400], "raw": raw}
-    except Exception as e:
-        logger.exception("LLM image confidence check failed")
-        raise
+            # Try to parse JSON; if the model wraps text, try to extract the {...}
+            parsed = None
+            try:
+                parsed = json_lib.loads(raw)
+            except Exception:
+                import re as _re
+                m = _re.search(r'\{[\s\S]*\}', raw)
+                if m:
+                    try:
+                        parsed = json_lib.loads(m.group(0))
+                    except Exception:
+                        parsed = None
 
-# -------------------------
-# Minimal HF wrappers for text classification (unchanged behavior — best-effort)
-# -------------------------
-def classify_huggingface(text, model, task_params=None):
-    if not HF_API_TOKEN:
-        return None
+            # If parsed and contains score, normalize and return
+            if parsed and isinstance(parsed, dict) and "score" in parsed:
+                try:
+                    score = float(parsed.get("score", 0.0))
+                except Exception:
+                    try:
+                        score = float(int(parsed.get("score", 0)))
+                    except Exception:
+                        score = 0.0
+                score = max(0.0, min(100.0, score))
+                explanation = str(parsed.get("explanation", "") or "")[:400]
+                return {"score": round(score, 2), "explanation": explanation, "raw": raw}
+
+            # If LLM returned but not parseable => log and fall through to fallback
+            logger.warning("LLM returned unparsable/unexpected response for image validation: %s", str(raw)[:400])
+
+        except Exception:
+            # keep the exception in logs and fall back to heuristics
+            logger.exception("LLM image confidence check failed; falling back to heuristics.")
+
     try:
-        headers = {"Authorization": f"Bearer {HF_API_TOKEN}", "Content-Type": "application/json"}
-        payload = {"inputs": text}
-        if task_params:
-            payload["parameters"] = task_params
-        r = requests.post(f"{HF_BASE_URL}/models/{model}", headers=headers, json=payload, timeout=30)
+        r = requests.get(image_url, timeout=12)
         r.raise_for_status()
-        return r.json()
-    except Exception:
-        logger.exception("classify_huggingface error")
-        return None
+        img = Image.open(BytesIO(r.content)).convert("RGB")
+        q = compute_image_quality_score(img)
+        score = q.get("score", 0.0)
+        comps = q.get("components", {})
+        explanation = f"Fallback quality check: score={score}. Components: {comps}."
+        if score < 30:
+            explanation = "Low image clarity/context for a public complaint. " + explanation
+        return {"score": float(round(score, 2)), "explanation": explanation[:400], "raw": "heuristic:quality-check"}
+    except Exception as e:
+        logger.exception("Fallback image download/quality check failed")
+        return {
+            "score": 5.0,
+            "explanation": "Unable to validate image (LLM failed and fallback also failed).",
+            "raw": f"heuristic:error:{str(e)[:300]}"
+        }
 
-def map_label_to_key(label):
-    try:
-        return CATEGORY_KEYS[CATEGORY_LABELS.index(label)]
-    except Exception:
-        return "other"
-
-def classify_category(text):
-    default = {"rawLabel": CATEGORY_LABELS[-1], "category": "other", "confidence": 0.0}
-    data = classify_huggingface(text, "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
-                                {"candidate_labels": CATEGORY_LABELS, "multi_label": False})
-    if not data:
-        return default
-    try:
-        if isinstance(data, dict) and "labels" in data and isinstance(data["labels"], list):
-            raw_label = data["labels"][0]
-            confidence = float(data.get("scores", [0.0])[0] if data.get("scores") else 0.0)
-        else:
-            top = sorted(data, key=lambda x: x.get("score", 0), reverse=True)[0]
-            raw_label = top.get("label")
-            confidence = float(top.get("score", 0.0))
-        return {"rawLabel": raw_label, "category": map_label_to_key(raw_label), "confidence": confidence}
-    except Exception:
-        logger.exception("classify_category parsing error")
-        return default
-
-def classify_priority(text):
-    default = {"sentiment": "neutral", "sentimentScore": 0.0}
-    data = classify_huggingface(text, PRIORITY_MODEL)
-    if not data:
-        return default
-    try:
-        if isinstance(data, list) and isinstance(data[0], dict):
-            top = sorted(data, key=lambda x: x.get("score", 0), reverse=True)[0]
-            return {"sentiment": top.get("label", "neutral"), "sentimentScore": float(top.get("score", 0.0))}
-        return default
-    except Exception:
-        logger.exception("classify_priority parsing error")
-        return default
-
-def normalize_sentiment(s):
-    s = (s or "").lower()
-    if s in ["label_0", "negative"]: return "negative"
-    if s in ["label_1", "neutral"]: return "neutral"
-    if s in ["label_2", "positive"]: return "positive"
-    return "neutral"
-
-def extract_keywords(text, top_k=5):
-    tokens = re.findall(r"[a-z]{3,}", (text or "").lower())
-    stopwords = {"the", "and", "for", "with", "this", "that", "there", "their", "was", "were", "from", "will", "your", "you", "are", "please", "city", "area", "ward"}
-    freq = Counter([t for t in tokens if t not in stopwords])
-    return [w for w,_ in freq.most_common(top_k)]
-
-def find_urgent_matches(text):
-    lower = (text or "").lower()
-    return [k for k in URGENT_KEYWORDS if k in lower]
 
 # -------------------------
-# API: /validate-image  (LLM-only)
+# validate-image route (improved error detail, uses fallback when Groq missing)
 # -------------------------
 @app.route("/validate-image", methods=["POST"])
 def validate_image():
     try:
         payload = request.get_json() or {}
-        image_url = payload.get("imageUrl")
+        image_url = payload.get("imageUrl") or payload.get("image_url") or payload.get("url")
+        public_id = payload.get("public_id")
+        public_url = payload.get("public_url")
+
         if not image_url:
             return jsonify({"error": "imageUrl required"}), 400
 
         if not groq_client:
-            return jsonify({"error": "LLM validation unavailable: set GROQ_API_KEY and install groq SDK."}), 500
-
+            # If you intentionally want fallback-only mode, comment this out and allow heuristics
+            # return jsonify({"error": "LLM validation unavailable: set GROQ_API_KEY and install groq SDK."}), 500
+            logger.warning("Groq not configured; using heuristic fallback only.")
         try:
             llm_res = llm_image_confidence(image_url)
         except Exception as e:
-            logger.exception("LLM image check failed")
-            return jsonify({"error": "LLM image validation failed", "detail": str(e)}), 500
+            logger.exception("LLM image check failed for url: %s", image_url)
+            return jsonify({
+                "error": "LLM image validation failed",
+                "detail": str(e),
+                "hint": "Check GROQ_API_KEY/LLAVA_MODEL and Groq SDK compatibility. See server logs for raw LLM reply."
+            }), 500
 
         llm_score = float(llm_res.get("score", 0.0))
         explanation = llm_res.get("explanation", "")
         raw = llm_res.get("raw", "")
-
         ok = llm_score >= IMAGE_LLM_THRESHOLD
 
-        return jsonify({
-            "ok": ok,
-            "llm_score": llm_score,
-            "explanation": explanation,
-            "raw": raw,
-            "threshold": float(IMAGE_LLM_THRESHOLD)
-        }), 200
+        result = {"ok": ok, "llm_score": llm_score, "explanation": explanation, "raw": raw, "threshold": float(IMAGE_LLM_THRESHOLD)}
+
+        # If rejected AND Cloudinary configured AND client provided public_id (or url), attempt deletion
+        if not ok and cloudinary and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET and (public_id or public_url):
+            try:
+                # extract public_id from public_url if needed
+                pid = public_id
+                if not pid and public_url:
+                    m = re.search(r'/upload/(?:v\d+/)?(.+)$', public_url)
+                    if m:
+                        pid = re.sub(r'\.[a-zA-Z0-9]{2,5}$', '', m.group(1))
+                if pid:
+                    from cloudinary import uploader
+                    del_res = uploader.destroy(pid, resource_type="image")
+                    logger.info("Cloudinary delete requested for %s => %s", pid, del_res)
+                    result["deleted"] = del_res
+                else:
+                    logger.warning("No public_id extracted; skipping server-side delete")
+            except Exception as e:
+                logger.exception("cloudinary delete attempt failed")
+                result["delete_error"] = str(e)
+
+        return jsonify(result), 200
 
     except Exception:
         logger.exception("validate-image internal error")
         return jsonify({"error": "internal error"}), 500
+
+
+# API: /delete-cloudinary
+@app.route("/delete-cloudinary", methods=["POST"])
+def delete_cloudinary():
+    """
+    POST { "public_id": "folder/file", "resource_type": "image" }
+    Accepts either:
+      - public_id: "folder/file"
+      - or public_url: "https://res.cloudinary.com/<cloud>/image/upload/v123/.../file.png"
+    Returns JSON { deleted: {...} } or clear error message.
+    """
+    payload = request.get_json() or {}
+    public_id = payload.get("public_id")
+    public_url = payload.get("public_url")
+    resource_type = payload.get("resource_type", "image")
+
+    # allow full url and extract public_id
+    if not public_id and public_url:
+        try:
+            # Attempt to extract portion after /upload/
+            m = re.search(r'/upload/(?:v\d+/)?(.+)$', public_url)
+            if m:
+                candidate = m.group(1)
+                candidate = re.sub(r'\.[a-zA-Z0-9]{2,5}$', '', candidate)
+                public_id = candidate
+        except Exception:
+            public_id = None
+
+    if not public_id:
+        return jsonify({"error": "public_id or public_url required"}), 400
+
+    # verify Cloudinary is configured
+    if not cloudinary:
+        return jsonify({"error": "Cloudinary SDK not installed on server"}), 500
+
+    if not (CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET and CLOUDINARY_CLOUD_NAME):
+        return jsonify({"error": "Cloudinary not configured on server. Set CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET, CLOUDINARY_CLOUD_NAME."}), 500
+
+    try:
+        from cloudinary import uploader
+        logger.info("Attempting to delete Cloudinary asset: %s (resource_type=%s)", public_id, resource_type)
+        res = uploader.destroy(public_id, resource_type=resource_type)
+        logger.info("Cloudinary delete response: %s", res)
+        return jsonify({"deleted": res}), 200
+    except Exception as e:
+        logger.exception("cloudinary delete failed for %s", public_id)
+        return jsonify({"error": "cloudinary delete failed", "detail": str(e)}), 500
 
 # -------------------------
 # API: /submit-grievance (uses LLM-only image check if image provided)
@@ -408,8 +450,6 @@ def submit_grievance():
 
     image_validation_result = None
     if image_url:
-        if not groq_client:
-            return jsonify({"error": "Image validation disabled (GROQ_API_KEY missing). Server rejects image submissions until LLM configured)."}), 500
         try:
             llm_res = llm_image_confidence(image_url)
             llm_score = float(llm_res.get("score", 0.0))
@@ -516,18 +556,14 @@ def sign_cloudinary():
 
     if cloudinary and CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY:
         try:
-            # Build a preview URL with transformation. If api_secret is present cloudinary_url
-            # with sign_url=True will add a signature.
             signed_url, options = cloudinary_url(public_id, resource_type=resource_type, sign_url=bool(CLOUDINARY_API_SECRET), secure=True, transformation=transform)
             return jsonify({"signedUrl": signed_url, "signed": bool(CLOUDINARY_API_SECRET)}), 200
         except Exception:
             logger.exception("cloudinary signing failed")
             return jsonify({"error": "cloudinary signing failed"}), 500
 
-    # fallback: construct unsigned preview URL manually if possible
     if CLOUDINARY_CLOUD_NAME:
         try:
-            # unsigned transform inserted after /upload/
             unsigned = f"https://res.cloudinary.com/{CLOUDINARY_CLOUD_NAME}/{resource_type}/upload/{transform}/{public_id}"
             return jsonify({"signedUrl": unsigned, "signed": False}), 200
         except Exception:

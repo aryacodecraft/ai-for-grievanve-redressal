@@ -286,7 +286,9 @@
       <div class="nav-links">
         <a href="#" class="active">Home</a>
       </div>
+      
       <div class="auth-buttons">
+        
         <button class="btn-signin" onclick="showAuthModal('signin')">Sign in</button>
         <button class="btn-join" onclick="showAuthModal('signup')">Join now</button>
       </div>
@@ -489,6 +491,9 @@
 
       if (!user) return showStatus("❌ You must be signed in!", "text-danger");
       if (!title || !desc) return showStatus("⚠ Title and description required.", "text-warning");
+      if (!latitude || !longitude) {
+        return showStatus("⚠ Location is mandatory. Click 'Use My Location'.", "text-warning");
+      }
 
       try {
         const newGrievance = {
@@ -591,47 +596,104 @@
 
     // ✅ ADDED: Cloudinary Image Upload Function
     async function uploadImage() {
-      const fileInput = document.getElementById('imageUpload');
-      const file = fileInput.files[0];
-      const urlDisplay = document.getElementById('imageUrl');
-      const hiddenInput = document.getElementById('imageURLHidden');
+  const fileInput = document.getElementById('imageUpload');
+  const file = fileInput.files[0];
+  const urlDisplay = document.getElementById('imageUrl');
+  const hiddenInput = document.getElementById('imageURLHidden');
 
-      if (!file) {
-        alert('⚠ Please select an image first.');
-        return;
-      }
+  if (!file) {
+    alert('⚠ Please select an image first.');
+    return;
+  }
 
-      const formData = new FormData();
-      formData.append('file', file);
-      // Make sure your Cloudinary upload preset name matches this string in your Cloudinary console.
-      formData.append('upload_preset', 'grievance_app');
+  const BACKEND = "http://127.0.0.1:5000";
+  const CLOUD_NAME = "di8coyoaq";
+  const UPLOAD_PRESET = "grievance app"; // exact preset name in Cloudinary
 
-      urlDisplay.textContent = '⏳ Uploading...';
+  urlDisplay.textContent = "⏳ Uploading...";
+  hiddenInput.value = "";
 
-      try {
-        const response = await fetch(
-          'https://api.cloudinary.com/v1_1/di8coyoaq/image/upload',
-          {
-            method: 'POST',
-            body: formData
-          }
-        );
+  try {
+    // 1) upload to Cloudinary
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("upload_preset", UPLOAD_PRESET);
 
-        const data = await response.json();
+    const upResp = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
+      method: "POST",
+      body: fd
+    });
 
-        if (data.secure_url) {
-          urlDisplay.textContent = data.secure_url;
-          hiddenInput.value = data.secure_url;
-          showStatus("✅ Image uploaded!", "text-success");
-        } else {
-          throw new Error(data.error?.message || 'Upload failed');
-        }
-      } catch (error) {
-        console.error('Upload error:', error);
-        urlDisplay.textContent = '❌ Upload failed';
-        alert('❌ Image upload failed. Check console for details.');
-      }
+    const upJson = await upResp.json();
+
+    if (!upResp.ok || !upJson.secure_url) {
+      alert("Upload failed: " + (upJson.error?.message || "Unknown"));
+      urlDisplay.textContent = "❌ Upload failed";
+      return;
     }
+
+    const uploadedUrl = upJson.secure_url;
+    const publicId = upJson.public_id;
+
+    // 2) call your server to validate the image (LLM)
+    urlDisplay.textContent = "⏳ Validating image...";
+
+    const validateResp = await fetch(`${BACKEND}/validate-image`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageUrl: uploadedUrl })
+    });
+
+    const validateJson = await validateResp.json().catch(() => null);
+
+    if (!validateResp.ok) {
+      console.error("Validation API error:", validateResp.status, validateJson);
+      // try to clean up uploaded asset on server if possible
+      try {
+        await fetch(`${BACKEND}/delete-cloudinary`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ public_id: publicId, resource_type: 'image' })
+        });
+      } catch(e) { /* ignore */ }
+      urlDisplay.textContent = '❌ Validation failed (server)';
+      alert('Image validation failed on server. Check server logs/console.');
+      return;
+    }
+
+    // 3) validation response exists
+    if (validateJson && validateJson.ok) {
+      // accepted
+      urlDisplay.textContent = uploadedUrl;
+      hiddenInput.value = uploadedUrl;
+      showStatus(`✅ Image validated (score ${validateJson.llm_score})`, "text-success");
+      return;
+    }
+
+    // 4) rejected by LLM
+    urlDisplay.textContent = '❌ Image rejected';
+    hiddenInput.value = '';
+    showStatus("⚠️ Image rejected: " + (validateJson?.explanation || "Not relevant"), "text-warning");
+
+    // best-effort delete uploaded asset
+    try {
+      await fetch(`${BACKEND}/delete-cloudinary`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ public_id: publicId, resource_type: 'image' })
+      });
+    } catch (e) {
+      console.warn("Failed to request server-side deletion of Cloudinary asset", e);
+    }
+
+    alert("That image looks invalid for a public grievance (selfie/screenshot). Please choose another image.");
+  } catch (err) {
+    console.error("Upload/validate error:", err);
+    urlDisplay.textContent = "❌ Upload failed";
+    alert("Upload/validation failed. Check console and server logs.");
+  }
+}
+
   </script>
 </body>
 </html>
