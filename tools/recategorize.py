@@ -86,19 +86,11 @@ def recategorize_all():
 
             # Apply logic from server.py (Existing HF/Keyword logic for comparison)
             
-            hf_priority = "low"
-            sentiment_raw = pri_res.get("sentiment")
-            score = pri_res.get("sentimentScore")
+            hf_priority = pri_res.get("priority", "low")
+            sentiment_raw = pri_res.get("sentiment", "neutral")
+            score = pri_res.get("sentimentScore", 0.0)
             sentiment_norm = normalize_sentiment(sentiment_raw)
             urgent_matches = find_urgent_matches(text)
-
-            if len(urgent_matches) > 0:
-                hf_priority = "high"
-            elif sentiment_norm == "negative":
-                if score > 0.7: hf_priority = "high"
-                elif score > 0.35: hf_priority = "medium"
-            elif sentiment_norm == "neutral":
-                if score > 0.6: hf_priority = "medium"
 
             hf_category = cat_res.get("category", "other")
             keyword_category = infer_category_from_keywords(text)

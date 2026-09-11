@@ -495,21 +495,31 @@
         return showStatus("⚠ Location is mandatory. Click 'Use My Location'.", "text-warning");
       }
 
+      showStatus("⏳ Submitting and classifying grievance...", "text-info");
+
       try {
-        const newGrievance = {
+        const payload = {
           title,
           description: desc,
-          ...(imageUrl && { imageUrl }),
           userId: user.uid,
-          status: "open",
-          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-          ...(latitude && longitude && {
-            latitude: parseFloat(latitude),
-            longitude: parseFloat(longitude)
-          })
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude),
+          ...(imageUrl && { imageUrl })
         };
 
-        await db.collection("grievances").add(newGrievance);
+        const response = await fetch(`${BACKEND_URL}/submit-grievance`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const respJson = await response.json();
+
+        if (!response.ok) {
+          throw new Error(respJson.error || "Failed to submit grievance");
+        }
 
         // clear form
         document.getElementById('title').value = '';
@@ -520,7 +530,7 @@
         document.getElementById('latitude').value = '';
         document.getElementById('longitude').value = '';
         document.getElementById('locationStatus').innerText = '';
-        showStatus("✅ Grievance submitted!", "text-success");
+        showStatus("✅ Grievance submitted and categorized!", "text-success");
       } catch (e) {
         console.error(e);
         showStatus("❌ Failed: " + e.message, "text-danger");

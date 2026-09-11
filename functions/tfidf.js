@@ -10,9 +10,7 @@ function tf_tokenize(text){
     .filter(t=>t.length>2 && !/^\d+$/.test(t));
 }
 
-// improved area detection:
-// - checks explicit area/locality fields (done where called)
-// - falls back to suffix/pattern detection (captures 'dharampeth', 'xyz-peth', 'Govind Nagar', 'something colony', etc.)
+
 function tf_detectArea(text){
   if(!text) return null;
   const pats = ['peth','nagar','colony','vihar','bagh','gaon','gaon','chowk','market','ward','block','sector','layout','dharampeth'];
@@ -116,6 +114,24 @@ function tf_topKeywords(centroid, vocabMap, k=4){
   return arr.slice(0,k).map(x=>inv[x[0]]).filter(Boolean);
 }
 
+function distance(lat1, lon1, lat2, lon2) {
+    const R = 6371e3; // meters
+
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+    const a =
+        Math.sin(Δφ / 2) ** 2 +
+        Math.cos(φ1) *
+        Math.cos(φ2) *
+        Math.sin(Δλ / 2) ** 2;
+
+    return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // main run function (keeps same return shape, but filters out singles)
 function TFIDF_run(grievances){
   if(!grievances || !grievances.length) return [];
@@ -131,15 +147,47 @@ function TFIDF_run(grievances){
     const ids = c.ids.slice(); // indices into grievances/corpus
     const sample = corpus[ids[0]] || '';
     // compute area: prefer explicit fields on grievances; fallback to detectArea(sample)
-    const areaCounts = {};
-    ids.forEach(i => {
-      const g = grievances[i] || {};
-      const explicit = g.area || g.locality || (g.hfEngine && (g.hfEngine.area || g.hfEngine.location));
-      const detected = explicit ? explicit : tf_detectArea(corpus[i]);
-      const a = detected ? String(detected).trim() : null;
-      if(a) areaCounts[a] = (areaCounts[a] || 0) + 1;
-    });
-    const area = Object.keys(areaCounts).length ? Object.entries(areaCounts).sort((a,b)=>b[1]-a[1])[0][0] : (grievances[ids[0]]?.area || tf_detectArea(sample) || 'Unknown');
+    
+    // NEW LOCATION LOGIC USING LATITUDE/LONGITUDE
+
+const areaCounts = {};
+
+ids.forEach(i => {
+  const g = grievances[i] || {};
+
+  // First preference: already stored area/locality
+  let locationName =
+      g.area ||
+      g.locality ||
+      (g.hfEngine && (g.hfEngine.area || g.hfEngine.location));
+
+  // If no area exists, create a location label from coordinates
+  if (!locationName && g.latitude != null && g.longitude != null) {
+
+    // Round coordinates so nearby complaints get grouped together
+    const lat = Number(g.latitude).toFixed(3);
+    const lon = Number(g.longitude).toFixed(3);
+
+    locationName = `${lat}, ${lon}`;
+  }
+
+  // Final fallback to text detection
+  if (!locationName) {
+    locationName = tf_detectArea(corpus[i]);
+  }
+
+  if (locationName) {
+    locationName = String(locationName).trim();
+    areaCounts[locationName] =
+      (areaCounts[locationName] || 0) + 1;
+  }
+});
+
+const area = Object.keys(areaCounts).length
+  ? Object.entries(areaCounts)
+      .sort((a, b) => b[1] - a[1])[0][0]
+  : "Unknown";
+  
     const keywords = tf_topKeywords(c.centroid || new Map(), tf.vocab, 4);
     return { clusterId: 'cluster_' + Date.now() + '_' + idx, size: ids.length, ids, sample, area, keywords };
   }).filter(c => c.size >= 2); // remove singletons

@@ -160,12 +160,86 @@ CATEGORY_KEYS = ["water", "roads", "electricity", "sanitation", "health", "gover
 PRIORITY_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 
 URGENT_KEYWORDS = [
-    "urgent", "emergency", "immediately", "asap",
-    "accident", "fire", "flood", "electrocution",
-    "collapsed", "burst", "serious", "critical",
-    "life threatening", "danger", "injury",
-    "major issue", "no water", "no electricity"
+    # General urgency
+    "urgent",
+    "emergency",
+    "immediately",
+    "immediate action",
+    "critical",
+    "serious",
+    "danger",
+    "dangerous",
+    "life threatening",
+    "high risk",
+    "unsafe",
+    "asap",
+
+    # Fire & Disaster
+    "fire",
+    "smoke",
+    "explosion",
+    "blast",
+    "gas leak",
+    "building collapse",
+    "collapsed",
+    "collapse",
+    "wall collapse",
+    "flood",
+    "flooding",
+    "landslide",
+
+    # Electricity hazards
+    "electrocution",
+    "electric shock",
+    "live wire",
+    "hanging wire",
+    "sparking",
+    "short circuit",
+    "electrical hazard",
+    "high voltage",
+    "transformer blast",
+    "transformer fire",
+    "exposed cable",
+
+    # Water & Sanitation emergencies
+    "sewage",
+    "overflowing sewage",
+    "sewage overflow",
+    "blocked drain",
+    "choked drain",
+    "drain overflow",
+    "water contamination",
+    "contaminated water",
+    "dirty water",
+    "waterborne disease",
+    "health hazard",
+    "sanitation hazard",
+    "stagnant water",
+    "open manhole",
+    "manhole cover missing",
+
+    # Road safety
+    "major accident",
+    "fatal accident",
+    "sinkhole",
+    "road cave in",
+    "bridge collapse",
+    "huge pothole",
+    "deep pothole",
+
+    # Health emergencies
+    "disease outbreak",
+    "epidemic",
+    "infection spread",
+    "medical emergency",
+
+    # Utility failures affecting many people
+    "no water",
+    "no electricity",
+    "power outage",
+    "complete blackout"
 ]
+
 
 SANITATION_KEYWORDS = [
     "garbage", "waste", "trash", "dustbin", "sewage", "sewer",
@@ -173,6 +247,421 @@ SANITATION_KEYWORDS = [
     "smell", "stink", "stray animals", "dump",
     "waste collection", "garbage collection"
 ]
+
+CATEGORY_MODEL = "MoritzLaurer/deberta-v3-large-zeroshot-v2.0"
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+ALL_KEYWORD_LISTS = {
+    "water": ["water", "leak", "contamination", "pipeline", "pressure", "supply", "pipe", "borewell"],
+    "roads": ["road", "pothole", "footpath", "traffic", "tar", "asphalt", "cracks", "pavement"],
+    "electricity": ["electricity", "power", "cut", "voltage", "streetlight", "wire", "cable", "blackout", "transformer", "sparking"],
+    "sanitation": SANITATION_KEYWORDS,
+    "health": ["hospital", "clinic", "medicine", "health", "doctor", "disease", "outbreak", "epidemic", "infection"],
+    "governance": ["governance", "corruption", "bribe", "behavior", "delay", "staff", "permission", "office", "officer"],
+    "urgent": URGENT_KEYWORDS
+}
+
+def normalize_sentiment(sentiment):
+    if not sentiment:
+        return "neutral"
+    s = sentiment.lower().strip()
+    if "neg" in s:
+        return "negative"
+    if "pos" in s:
+        return "positive"
+    return "neutral"
+
+def find_urgent_matches(text):
+    if not text:
+        return []
+    text_lower = text.lower()
+    matches = []
+    for keyword in URGENT_KEYWORDS:
+        if " " in keyword:
+            if keyword in text_lower:
+                matches.append(keyword)
+        else:
+            pattern = rf"\b{re.escape(keyword)}"
+            if re.search(pattern, text_lower):
+                matches.append(keyword)
+    return matches
+
+def extract_keywords(text):
+    if not text:
+        return []
+    text_lower = text.lower()
+    found = set()
+    for cat, kws in ALL_KEYWORD_LISTS.items():
+        for kw in kws:
+            if " " in kw:
+                if kw in text_lower:
+                    found.add(kw)
+            else:
+                pattern = rf"\b{re.escape(kw)}"
+                if re.search(pattern, text_lower):
+                    found.add(kw)
+    return list(found)
+
+def infer_category_from_keywords(text):
+    if not text:
+        return None
+    text_lower = text.lower()
+    counts = {cat: 0 for cat in CATEGORY_KEYS if cat != "other"}
+    
+    for cat, kws in ALL_KEYWORD_LISTS.items():
+        if cat in counts:
+            for kw in kws:
+                if " " in kw:
+                    if kw in text_lower:
+                        counts[cat] += 1
+                else:
+                    pattern = rf"\b{re.escape(kw)}"
+                    if re.search(pattern, text_lower):
+                        counts[cat] += 1
+                        
+    max_cat = None
+    max_count = 0
+    for cat, count in counts.items():
+        if count > max_count:
+            max_count = count
+            max_cat = cat
+            
+    if max_count > 0:
+        return max_cat
+    return None
+
+def classify_category(text):
+    if not text:
+        return {
+            "rawLabel": "Other issues not matching the above categories",
+            "category": "other",
+            "confidence": 0.0
+        }
+        
+    raw_label = "Other issues not matching the above categories"
+    category = "other"
+    confidence = 0.0
+
+    # Try HF zero-shot first
+    if HF_API_TOKEN:
+        models = [CATEGORY_MODEL, "facebook/bart-large-mnli"]
+        for model in models:
+            try:
+                url = f"{HF_BASE_URL}/models/{model}"
+                headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+                payload = {
+                    "inputs": text,
+                    "parameters": {
+                        "candidate_labels": CATEGORY_LABELS
+                    }
+                }
+                response = requests.post(url, headers=headers, json=payload, timeout=5)
+                if response.status_code == 200:
+                    res_data = response.json()
+                    if isinstance(res_data, dict) and "labels" in res_data and "scores" in res_data:
+                        labels = res_data["labels"]
+                        scores = res_data["scores"]
+                        if labels and scores:
+                            best_label = labels[0]
+                            best_score = float(scores[0])
+                            
+                            # Only accept if confidence is reasonably high (> 0.4)
+                            if best_score > 0.4 and best_label in CATEGORY_LABELS:
+                                idx = CATEGORY_LABELS.index(best_label)
+                                return {
+                                    "rawLabel": best_label,
+                                    "category": CATEGORY_KEYS[idx],
+                                    "confidence": best_score
+                                }
+            except Exception as e:
+                logger.error(f"HF category API call failed for model {model}: {e}")
+                
+    # Fallback to Groq LLM for categorization if HF fails or is low confidence
+    if groq_client:
+        prompt = (
+            "You are an expert civic grievance classifier.\n"
+            "Classify the grievance into exactly one of the allowed categories.\n\n"
+            "Grievance text:\n"
+            f"\"\"\"\n{text}\n\"\"\"\n\n"
+            "Allowed Category Keys and Descriptions:\n"
+            "- water: Issues related to water supply, water pressure, contamination, or no water\n"
+            "- roads: Issues related to roads, potholes, footpaths, traffic, or road damage\n"
+            "- electricity: Issues related to electricity, power cuts, voltage fluctuations, or streetlights not working\n"
+            "- sanitation: Issues related to sanitation, garbage, sewage, drainage, or public cleanliness\n"
+            "- health: Issues related to health services, hospitals, clinics, medicines, or public health\n"
+            "- governance: Issues related to governance, staff behavior, corruption, permissions, or government service delays\n"
+            "- other: Other issues not matching the above categories\n\n"
+            "Return JSON only:\n"
+            "{\n"
+            "  \"category\": \"water|roads|electricity|sanitation|health|governance|other\",\n"
+            "  \"reason\": \"short explanation\"\n"
+            "}\n"
+        )
+        try:
+            res = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=150
+            )
+            raw = res.choices[0].message.content.strip()
+            parsed = None
+            try:
+                parsed = json_lib.loads(raw)
+            except Exception:
+                import re as _re
+                m = _re.search(r'\{[\s\S]*\}', raw)
+                if m:
+                    try:
+                        parsed = json_lib.loads(m.group(0))
+                    except Exception:
+                        pass
+            if parsed and isinstance(parsed, dict) and "category" in parsed:
+                cat_key = parsed.get("category").lower().strip()
+                if cat_key in CATEGORY_KEYS:
+                    idx = CATEGORY_KEYS.index(cat_key)
+                    return {
+                        "rawLabel": CATEGORY_LABELS[idx],
+                        "category": cat_key,
+                        "confidence": 0.95
+                    }
+        except Exception as e:
+            logger.error(f"Groq category classification fallback failed: {e}")
+            
+    # Rule/keyword-based final fallback
+    keyword_cat = infer_category_from_keywords(text)
+    if keyword_cat and keyword_cat in CATEGORY_KEYS:
+        idx = CATEGORY_KEYS.index(keyword_cat)
+        raw_label = CATEGORY_LABELS[idx]
+        category = keyword_cat
+        confidence = 0.5
+        
+    return {
+        "rawLabel": raw_label,
+        "category": category,
+        "confidence": confidence
+    }
+
+HIGH_PRIORITY_KEYWORDS = [
+    "fire", "smoke", "explosion", "gas leak",
+    "electrocution", "electric shock",
+    "live wire", "hanging wire", "sparking",
+    "transformer blast", "transformer fire",
+    "building collapse", "bridge collapse",
+    "sinkhole", "major accident",
+    "fatal accident", "open manhole",
+    "manhole cover missing", "sewage overflow",
+    "flood", "flooding", "water contamination",
+    "disease outbreak", "epidemic",
+    "complete blackout", "no electricity",
+    "no water"
+]
+
+MEDIUM_PRIORITY_KEYWORDS = [
+    "water leakage", "leak", "leaking", "blocked drain",
+    "garbage pile", "streetlight",
+    "power outage", "pothole",
+    "drain overflow", "damaged road",
+    "overflowing sewage"
+]
+
+LOW_PRIORITY_KEYWORDS = [
+    "minor crack", "cleanliness issue",
+    "small pothole", "cosmetic damage"
+]
+
+def contains_high_risk_issue(text):
+    if not text:
+        return False
+    text_lower = text.lower()
+    for kw in HIGH_PRIORITY_KEYWORDS:
+        if " " in kw:
+            if kw in text_lower:
+                return True
+        else:
+            if re.search(rf"\b{re.escape(kw)}", text_lower):
+                return True
+    return False
+
+def contains_medium_risk_issue(text):
+    if not text:
+        return False
+    text_lower = text.lower()
+    for kw in MEDIUM_PRIORITY_KEYWORDS:
+        if " " in kw:
+            if kw in text_lower:
+                return True
+        else:
+            if re.search(rf"\b{re.escape(kw)}", text_lower):
+                return True
+    return False
+
+def affects_many_people(text):
+    if not text:
+        return False
+    text_lower = text.lower()
+    phrases = [
+        "entire area",
+        "whole colony",
+        "many people",
+        "entire street",
+        "complete blackout",
+        "whole locality",
+        "for several days",
+        "for many days"
+    ]
+    for phrase in phrases:
+        if phrase in text_lower:
+            return True
+    return False
+
+def classify_priority(text):
+    # Sentiment Analysis (for analytics and fallback priority)
+    sentiment = "neutral"
+    sentiment_score = 0.0
+    if HF_API_TOKEN:
+        try:
+            url = f"{HF_BASE_URL}/models/{PRIORITY_MODEL}"
+            headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+            payload = {"inputs": text}
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            if response.status_code == 200:
+                res_data = response.json()
+                if isinstance(res_data, list) and len(res_data) > 0:
+                    items = res_data[0] if isinstance(res_data[0], list) else res_data
+                    best_item = max(items, key=lambda x: x.get("score", 0.0))
+                    sentiment = normalize_sentiment(best_item.get("label", "neutral"))
+                    sentiment_score = float(best_item.get("score", 0.0))
+        except Exception as e:
+            logger.error(f"HF priority sentiment API call failed: {e}")
+
+    priority = None
+    
+    # Step 1: HIGH_PRIORITY_KEYWORDS
+    if contains_high_risk_issue(text):
+        priority = "high"
+    # Step 2: affects_many_people
+    elif affects_many_people(text):
+        priority = "high"
+    # Step 3: MEDIUM_PRIORITY_KEYWORDS
+    elif contains_medium_risk_issue(text):
+        priority = "medium"
+    # Step 4: Call Groq LLM for final classification
+    else:
+        if groq_client:
+            prompt = (
+                "You are an expert civic grievance classifier.\n"
+                "Classify the grievance priority.\n\n"
+                "Grievance text:\n"
+                f"\"\"\"\n{text}\n\"\"\"\n\n"
+                "Rules:\n"
+                "* HIGH: danger to life, public safety risk, severe service disruption affecting many citizens.\n"
+                "* MEDIUM: significant inconvenience or service disruption affecting some citizens.\n"
+                "* LOW: minor inconvenience, cosmetic issue, isolated non-urgent complaint.\n\n"
+                "Return JSON only:\n"
+                "{\n"
+                "  \"priority\": \"high|medium|low\",\n"
+                "  \"reason\": \"short explanation\"\n"
+                "}\n"
+            )
+            try:
+                res = groq_client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    max_tokens=150
+                )
+                raw = res.choices[0].message.content.strip()
+                parsed = None
+                try:
+                    parsed = json_lib.loads(raw)
+                except Exception:
+                    import re as _re
+                    m = _re.search(r'\{[\s\S]*\}', raw)
+                    if m:
+                        try:
+                            parsed = json_lib.loads(m.group(0))
+                        except Exception:
+                            pass
+                if parsed and isinstance(parsed, dict) and "priority" in parsed:
+                    p = parsed.get("priority").lower().strip()
+                    if p in ["high", "medium", "low"]:
+                        priority = p
+            except Exception as e:
+                logger.error(f"Groq priority classification failed: {e}")
+        
+        # Fallback to sentiment estimation on Groq parser/API failure
+        if not priority:
+            if sentiment == "negative" and sentiment_score > 0.35:
+                priority = "medium"
+            else:
+                priority = "low"
+
+    return {
+        "priority": priority,
+        "sentiment": sentiment,
+        "sentimentScore": sentiment_score
+    }
+
+def refine_with_groq(text, hf_category, hf_priority, hf_raw_label):
+    if not groq_client:
+        logger.warning("Groq client not initialized; skipping refinement.")
+        return None
+        
+    prompt = (
+        f"You are an AI assistant verifying and refining grievance classifications.\n"
+        f"Grievance Text:\n\"\"\"\n{text}\n\"\"\"\n\n"
+        f"Hugging Face models predicted:\n"
+        f"Category: {hf_category} (raw label: {hf_raw_label})\n"
+        f"Priority: {hf_priority}\n\n"
+        f"Allowed categories: {CATEGORY_KEYS}\n"
+        f"Allowed priorities: [\"low\", \"medium\", \"high\"]\n\n"
+        f"Please verify if the classification is correct. If needed, refine it based on the grievance text.\n"
+        f"Respond ONLY with a valid JSON object containing exactly these keys:\n"
+        f"  - category: one of {CATEGORY_KEYS}\n"
+        f"  - priority: one of [\"low\", \"medium\", \"high\"]\n"
+        f"  - explanation: a concise explanation of the decision (max 2 sentences).\n\n"
+        f"Do NOT include markdown formatting or backticks around the JSON. Return raw JSON text."
+    )
+    
+    try:
+        res = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+            max_tokens=300
+        )
+        raw = res.choices[0].message.content.strip()
+        
+        parsed = None
+        try:
+            parsed = json_lib.loads(raw)
+        except Exception:
+            import re as _re
+            m = _re.search(r'\{[\s\S]*\}', raw)
+            if m:
+                try:
+                    parsed = json_lib.loads(m.group(0))
+                except Exception:
+                    pass
+                    
+        if parsed and isinstance(parsed, dict) and "category" in parsed and "priority" in parsed:
+            cat = parsed.get("category")
+            if cat not in CATEGORY_KEYS:
+                parsed["category"] = hf_category
+            pri = parsed.get("priority")
+            if pri not in ["low", "medium", "high"]:
+                parsed["priority"] = hf_priority
+            if "explanation" not in parsed:
+                parsed["explanation"] = "Refined by Groq LLM."
+            return parsed
+            
+    except Exception as e:
+        logger.error(f"Groq refinement failed: {e}")
+        
+    return None
 
 # -------------------------
 # simple image quality scoring (kept optional — we will NOT use it for final decision)
@@ -238,21 +727,53 @@ def llm_image_confidence(image_url):
                 "Do NOT include any extra text outside the JSON object."
             )
 
-            user_text = (
-                "Rate this image (0-100) for whether it shows a public infrastructure complaint.\n"
-                "Return JSON only with keys `score` and `explanation`.\n"
-                f"Image URL: {image_url}\n"
-            )
+
 
             # Use a plain string for message content (fixes Groq 'messages.1' errors)
             res = groq_client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_text},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": """
+                                Does this image show a public infrastructure complaint?
+
+                                Valid:
+                                - potholes
+                                - broken roads
+                                - garbage piles
+                                - damaged streetlights
+                                - drainage issues
+                                - water leakage
+
+                                Invalid:
+                                - screenshots
+                                - selfies
+                                - memes
+                                - chats
+                                - documents
+
+                                Return JSON:
+                                {
+                                "score": 0-100,
+                                "explanation": "..."
+                                }
+                                """
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_url
+                                }
+                            }
+                        ]
+                    }
                 ],
                 temperature=0.0,
-                max_tokens=200,
+                max_tokens=500,
             )
 
             # extract raw text safely
@@ -340,6 +861,7 @@ def validate_image():
             logger.warning("Groq not configured; using heuristic fallback only.")
         try:
             llm_res = llm_image_confidence(image_url)
+            print("LLM RESULT:", llm_res)
         except Exception as e:
             logger.exception("LLM image check failed for url: %s", image_url)
             return jsonify({
@@ -385,6 +907,7 @@ def validate_image():
 # API: /delete-cloudinary
 @app.route("/delete-cloudinary", methods=["POST"])
 def delete_cloudinary():
+    
     """
     POST { "public_id": "folder/file", "resource_type": "image" }
     Accepts either:
@@ -396,6 +919,7 @@ def delete_cloudinary():
     public_id = payload.get("public_id")
     public_url = payload.get("public_url")
     resource_type = payload.get("resource_type", "image")
+
 
     # allow full url and extract public_id
     if not public_id and public_url:
@@ -479,7 +1003,7 @@ def submit_grievance():
         pass
 
     try:
-        doc_ref, write_time = db.collection("grievances").add(new_doc)
+        write_time, doc_ref = db.collection("grievances").add(new_doc)
         doc_id = doc_ref.id
     except Exception:
         logger.exception("Failed to create grievance document")
@@ -487,45 +1011,69 @@ def submit_grievance():
 
     full_text = f"{title}\n{description}"
     try:
-        cat = classify_category(full_text)
+        cat_res = classify_category(full_text)
     except Exception:
-        cat = {"rawLabel": "", "category": "other", "confidence": 0.0}
+        cat_res = {"rawLabel": "", "category": "other", "confidence": 0.0}
     try:
-        pri = classify_priority(full_text)
+        pri_res = classify_priority(full_text)
     except Exception:
-        pri = {"sentiment": "neutral", "sentimentScore": 0.0}
+        pri_res = {"sentiment": "neutral", "sentimentScore": 0.0, "priority": "low"}
 
-    sentiment_raw = pri.get("sentiment", "neutral")
-    sentiment_score = float(pri.get("sentimentScore", 0.0))
-    sentiment = normalize_sentiment(sentiment_raw)
-
-    hf_priority = "low"
+    hf_priority = pri_res.get("priority", "low")
+    sentiment_raw = pri_res.get("sentiment", "neutral")
+    score = pri_res.get("sentimentScore", 0.0)
     urgent_matches = find_urgent_matches(full_text)
-    if urgent_matches:
-        hf_priority = "high"
-    elif sentiment == "negative":
-        if sentiment_score > 0.7:
-            hf_priority = "high"
-        elif sentiment_score > 0.35:
-            hf_priority = "medium"
-    elif sentiment == "neutral" and sentiment_score > 0.6:
+
+    hf_category = cat_res.get("category", "other")
+    keyword_category = infer_category_from_keywords(full_text)
+    if keyword_category:
+        hf_category = keyword_category
+
+    if hf_category == "sanitation" and hf_priority == "low":
         hf_priority = "medium"
 
-    hf_category = cat.get("category", "other")
-    if any(k in (full_text or "").lower() for k in SANITATION_KEYWORDS):
-        hf_category = "sanitation"
-
-    hf_raw_label = cat.get("rawLabel", "")
+    hf_raw_label = cat_res.get("rawLabel", "")
     keywords = extract_keywords(full_text)
 
+    # 2. LLM Refinement (SECOND LOGIC PASS / WRAPPER)
+    try:
+        groq_res = refine_with_groq(full_text, hf_category, hf_priority, hf_raw_label)
+    except Exception:
+        groq_res = None
+
+    # 3. FINAL CLASSIFICATION (Prioritizes Groq refinement)
+    if groq_res:
+        priority = groq_res.get("priority", hf_priority)
+        category = groq_res.get("category", hf_category)
+        ai_explanation = groq_res.get("explanation", "Refined by Groq LLM.")
+    else:
+        priority = hf_priority
+        category = hf_category
+        ai_explanation = (
+            f"Category '{category}' predicted from '{hf_raw_label}' "
+            f"(score: {float(cat_res.get('confidence', 0.0)):.2f}), "
+            f"Priority '{priority}' determined using sentiment ('{sentiment_raw}', "
+            f"score: {float(score):.2f}) and urgency keywords."
+        )
+
     hf_engine = {
-        "category": hf_category,
-        "priority": hf_priority,
-        "isUrgent": hf_priority == "high",
-        "rawCategoryLabel": hf_raw_label,
-        "categoryConfidence": float(cat.get("confidence", 0.0)),
-        "urgentMatches": urgent_matches,
+        "category": category,
+        "priority": priority,
+        "isUrgent": priority == "high",
         "keywords": keywords,
+        "explanation": ai_explanation,
+        "rawCategoryLabel": hf_raw_label,
+        "categoryConfidence": float(cat_res.get("confidence", 0.0)),
+        "urgentMatches": urgent_matches,
+        "modelInfo": {
+            "categoryModel": CATEGORY_MODEL,
+            "priorityModel": PRIORITY_MODEL,
+            "sentimentLabel": sentiment_raw,
+            "sentimentScore": float(score),
+            "groqModel": GROQ_MODEL if groq_res else "None",
+            "hfCategory": hf_category,
+            "hfPriority": hf_priority,
+        },
     }
 
     try:
